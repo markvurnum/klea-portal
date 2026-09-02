@@ -2,11 +2,19 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { api } from './api.js';
 import { Logo, ThemeToggle, Icon, Avatar, gbp, niceDate } from './ui.jsx';
 
-export default function ClientSite() {
+export default function ClientSite({ startBooking = false }) {
   const [cat, setCat] = useState(null);
-  const [booking, setBooking] = useState(null); // active wizard state or null = landing
+  // startBooking is used by portal.kleahome.co.uk/#/book, the link the
+  // marketing site's "Get my price" buttons point at
+  const [booking, setBooking] = useState(startBooking ? { serviceId: null } : null);
 
   useEffect(() => { api.get('/api/catalogue').then(setCat).catch(console.error); }, []);
+
+  // Arriving on /#/book (the marketing site's buttons) opens the wizard, even
+  // if this component is already mounted from a previous route
+  useEffect(() => {
+    if (startBooking) setBooking(b => b || { serviceId: null });
+  }, [startBooking]);
 
   // Nav links leave the wizard (if open) and scroll to the section on the landing page
   const navTo = anchor => e => {

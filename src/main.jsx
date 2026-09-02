@@ -64,6 +64,8 @@ function App() {
   if (hash.startsWith('#/cleaner')) return <CleanerApp user={user} onSignOut={signOut} />;
   if (hash.startsWith('#/my')) return <Portal />;
   if (hash.startsWith('#/join')) return <Join />;
+  // #/book comes from the marketing site's buttons and opens the wizard directly
+  if (hash.startsWith('#/book')) return <ClientSite startBooking />;
   return <ClientSite />;
 }
 
