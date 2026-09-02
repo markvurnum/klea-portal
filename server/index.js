@@ -240,7 +240,7 @@ app.get('/api/admin/guesty/status', requireRole('admin', 'office'), (req, res) =
     changeover: { start: CHANGEOVER_START, end: CHANGEOVER_END },
     lastSync: db.settings.guestyLastSync || null,
     lastError: db.settings.guestyLastError || null,
-    autoSync: 'every 3 hours',
+    autoSync: 'every hour',
     imported: imported.length,
     awaitingApproval: imported.filter(b => b.status === 'requested').length,
     sameDay: imported.filter(b => b.sameDayTurnaround && b.status !== 'cancelled').length,
@@ -1375,7 +1375,7 @@ async function runGuestySync() {
   guestySyncing = false;
 }
 setTimeout(runGuestySync, 20_000);          // shortly after boot
-setInterval(runGuestySync, 3 * 3600 * 1000); // then every 3 hours
+setInterval(runGuestySync, 3600 * 1000);     // then hourly
 
 // ---------- Automated day-before reminders (demo: logged, not sent) ----------
 function runReminders() {
