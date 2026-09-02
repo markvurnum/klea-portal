@@ -11,6 +11,8 @@ import { attachUser, requireRole, requireSelfOrOffice, verifyPassword, hashPassw
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+// Behind Railway's proxy, so req.ip reflects the real client rather than the edge
+app.set('trust proxy', true);
 
 // Keep the portal out of search results
 app.use((req, res, next) => { res.set('X-Robots-Tag', 'noindex, nofollow'); next(); });
@@ -93,42 +95,61 @@ function staffEarnings(s) {
 // Brute-force protection: too many wrong passwords locks that email and IP
 // out for a while. In-memory is fine, a restart is not a useful attack window.
 const failedLogins = new Map(); // key -> { count, until }
+// The account locks quickly, because that is the thing being attacked.
+// The whole-IP limit is far higher: a small office shares one connection, and
+// one person fumbling their password must not lock out their colleagues.
 const MAX_ATTEMPTS = 6;
+const MAX_ATTEMPTS_IP = 30;
 const LOCKOUT_MINS = 15;
 
-function loginKey(req, email) {
-  return `${req.ip}|${String(email || '').toLowerCase().trim()}`;
+// Two counters: the account (the thing actually being attacked) and the source.
+// Keying only on IP is unreliable behind a proxy, so the account counter is the
+// one that must always hold.
+function loginKeys(req, email) {
+  const acct = 'acct:' + String(email || '').toLowerCase().trim();
+  return [acct, 'ip:' + req.ip];
 }
 
-function lockedOut(key) {
-  const rec = failedLogins.get(key);
-  if (!rec) return 0;
-  if (rec.until && rec.until > Date.now()) return Math.ceil((rec.until - Date.now()) / 60000);
-  if (rec.until && rec.until <= Date.now()) failedLogins.delete(key);
-  return 0;
+function lockedOut(keys) {
+  let longest = 0;
+  for (const key of keys) {
+    const rec = failedLogins.get(key);
+    if (!rec) continue;
+    if (rec.until && rec.until > Date.now()) {
+      longest = Math.max(longest, Math.ceil((rec.until - Date.now()) / 60000));
+    } else if (rec.until) {
+      failedLogins.delete(keys[0]); // clear this account; the IP counter stands
+    }
+  }
+  return longest;
 }
 
-function noteFailure(key) {
-  const rec = failedLogins.get(key) || { count: 0, until: 0 };
-  rec.count++;
-  if (rec.count >= MAX_ATTEMPTS) rec.until = Date.now() + LOCKOUT_MINS * 60000;
-  failedLogins.set(key, rec);
-  return rec;
+function noteFailure(keys) {
+  let acctCount = 0;
+  for (const key of keys) {
+    const limit = key.startsWith('ip:') ? MAX_ATTEMPTS_IP : MAX_ATTEMPTS;
+    const rec = failedLogins.get(key) || { count: 0, until: 0 };
+    rec.count++;
+    if (rec.count >= limit) rec.until = Date.now() + LOCKOUT_MINS * 60000;
+    failedLogins.set(key, rec);
+    if (!key.startsWith('ip:')) acctCount = rec.count;
+  }
+  return { count: acctCount };
 }
 
 app.post('/api/auth/login', (req, res) => {
   const db = getDb();
   const { email, password } = req.body;
-  const key = loginKey(req, email);
+  const keys = loginKeys(req, email);
 
-  const waitMins = lockedOut(key);
+  const waitMins = lockedOut(keys);
   if (waitMins) {
     return res.status(429).json({ error: `Too many failed attempts. Try again in ${waitMins} minute${waitMins === 1 ? '' : 's'}.` });
   }
 
   const user = (db.users || []).find(u => u.email === String(email || '').toLowerCase().trim() && u.active !== false);
   if (!user || !verifyPassword(password || '', user.password)) {
-    const rec = noteFailure(key);
+    const rec = noteFailure(keys);
     const left = MAX_ATTEMPTS - rec.count;
     return res.status(401).json({
       error: left > 0 && left <= 3
@@ -136,7 +157,7 @@ app.post('/api/auth/login', (req, res) => {
         : 'That email and password do not match.'
     });
   }
-  failedLogins.delete(key);
+  failedLogins.delete(keys[0]); // clear this account; the IP counter stands
   const token = issueToken(db, user);
   logAction('signed in', user.name, { user });
   save();
