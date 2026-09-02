@@ -1,5 +1,17 @@
 # Klea — HANDOFF
 
+## 2026-09-02 — Code backed up to GitHub
+
+**Repo: https://github.com/markvurnum/klea-portal (PRIVATE)** — 5 commits, 28 files, all pushed.
+
+Auth: a dedicated deploy key at `~/.ssh/klea_deploy` with read/write, added to that repo only (same pattern as intent-engine/prospect-machine). The repo is configured to use it via `git config core.sshCommand`, so `git push` just works from klea/.
+
+Verified NOT pushed: `.env` (Guesty keys), `credentials.txt`, `server/data/db.json`.
+
+Also on Desktop: `klea-backup-YYYY-MM-DD.bundle`, a verified complete history in one file, as an off-machine copy.
+
+**Website integration decision (in the PDF):** keep kleahome.co.uk on Netlify exactly as it is and point every booking button at `portal.kleahome.co.uk/#/book`, a new deep link that opens the booking wizard directly rather than a duplicate home page. Reasons: their site's blog/Declutter/Gift pages earn traffic a booking system would not, and a portal problem must not take down their shopfront. Portal already carries `noindex` so there is no duplicate-content issue.
+
 ## 2026-08-27 — LIVE at https://portal.kleahome.co.uk
 
 DNS records were added in Netlify and the portal is live on the subdomain with a valid certificate. Verified: HTTPS cert good (ssl_verify 0), app serves, API responds, login issues tokens, `/api/admin/*` returns 401 without auth, Guesty shows connected, time-off endpoint live.
