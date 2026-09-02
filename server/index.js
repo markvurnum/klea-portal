@@ -356,7 +356,7 @@ app.post('/api/admin/start-fresh', requireRole('admin'), (req, res) => {
   const keptUsers = (db.users || []).filter(u => u.role !== 'kleaner');
   Object.assign(db, {
     staff: [], clients: [], bookings: [], messages: [], payments: [], payouts: [],
-    applications: [], timesheets: [], absences: [], expenses: [],
+    applications: [], timesheets: [], absences: [], expenses: [], invoices: [],
     users: keptUsers, settings: keptSettings, activity: []
   });
   logAction('cleared all data for go-live', '', req);
@@ -391,6 +391,107 @@ app.post('/api/admin/users/regenerate-passwords', requireRole('admin'), (req, re
   logAction('generated new passwords for everyone', `${issued.length} logins`, req);
   save();
   res.json({ issued });
+});
+
+// ---------- Invoices: upload, mark paid, flag for chasing ----------
+// For clients who came direct rather than booking online. An invoice can hang
+// off a client, and optionally off a specific job.
+function expandInvoice(inv) {
+  const db = getDb();
+  const today = new Date().toISOString().slice(0, 10);
+  const overdueDays = inv.status === 'unpaid' && inv.dueDate && inv.dueDate < today
+    ? Math.floor((new Date(today) - new Date(inv.dueDate)) / 864e5)
+    : 0;
+  const b = inv.bookingId ? db.bookings.find(x => x.id === inv.bookingId) : null;
+  return {
+    id: inv.id, clientId: inv.clientId, bookingId: inv.bookingId || null,
+    number: inv.number, amount: inv.amount, issuedDate: inv.issuedDate, dueDate: inv.dueDate,
+    status: inv.status, paidDate: inv.paidDate || null, notes: inv.notes || '',
+    fileName: inv.file?.name || null,
+    clientName: db.clients.find(c => c.id === inv.clientId)?.name,
+    jobLabel: b ? `${b.date} ${b.start}` : null,
+    overdueDays,
+    needsChasing: overdueDays > 0
+  };
+}
+
+app.get('/api/admin/invoices', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const rows = (db.invoices || []).map(expandInvoice);
+  res.json({
+    invoices: rows.sort((a, b) => (b.issuedDate || '').localeCompare(a.issuedDate || '')),
+    outstanding: round2(rows.filter(r => r.status === 'unpaid').reduce((t, r) => t + r.amount, 0)),
+    overdue: round2(rows.filter(r => r.needsChasing).reduce((t, r) => t + r.amount, 0)),
+    chasing: rows.filter(r => r.needsChasing).length
+  });
+});
+
+app.post('/api/admin/invoices', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const { clientId, bookingId = null, number = '', amount, issuedDate, dueDate, notes = '', file } = req.body;
+  const c = db.clients.find(x => x.id === +clientId);
+  if (!c) return res.status(400).json({ error: 'Choose a client.' });
+  if (!amount || +amount <= 0) return res.status(400).json({ error: 'Enter the invoice amount.' });
+  if (file && !/^data:(image\/|application\/pdf)/.test(file.dataUrl || '')) {
+    return res.status(400).json({ error: 'Upload a PDF or an image of the invoice.' });
+  }
+  if (file && (file.dataUrl || '').length > 4_000_000) {
+    return res.status(400).json({ error: 'That file is too large. Please use a smaller scan or PDF.' });
+  }
+  if (!db.invoices) db.invoices = [];
+
+  const issued = issuedDate || new Date().toISOString().slice(0, 10);
+  // Default to 14 day terms when no due date is given
+  const due = dueDate || new Date(new Date(issued).getTime() + 14 * 864e5).toISOString().slice(0, 10);
+
+  const inv = {
+    id: nextId('invoices'), clientId: c.id, bookingId: bookingId ? +bookingId : null,
+    number: number || `INV-${nextId('invoices')}`, amount: round2(+amount),
+    issuedDate: issued, dueDate: due, status: 'unpaid', paidDate: null, notes,
+    file: file ? { name: file.name, dataUrl: file.dataUrl } : null,
+    createdAt: new Date().toISOString()
+  };
+  db.invoices.push(inv);
+  logAction('added an invoice', `${c.name}, £${inv.amount}`, req);
+  save();
+  res.status(201).json(expandInvoice(inv));
+});
+
+app.patch('/api/admin/invoices/:id', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const inv = (db.invoices || []).find(x => x.id === +req.params.id);
+  if (!inv) return res.status(404).json({ error: 'Not found' });
+  const c = db.clients.find(x => x.id === inv.clientId);
+
+  if (req.body.status === 'paid' && inv.status !== 'paid') {
+    inv.status = 'paid';
+    inv.paidDate = req.body.paidDate || new Date().toISOString().slice(0, 10);
+    logAction('marked an invoice paid', `${c?.name}, £${inv.amount}`, req);
+  } else if (req.body.status === 'unpaid' && inv.status !== 'unpaid') {
+    inv.status = 'unpaid';
+    inv.paidDate = null;
+    logAction('marked an invoice unpaid', `${c?.name}, £${inv.amount}`, req);
+  }
+  for (const k of ['number', 'notes', 'dueDate']) if (req.body[k] !== undefined) inv[k] = req.body[k];
+  if (req.body.amount !== undefined) inv.amount = round2(+req.body.amount);
+  save();
+  res.json(expandInvoice(inv));
+});
+
+app.get('/api/admin/invoices/:id/file', requireRole('admin', 'office'), (req, res) => {
+  const inv = (getDb().invoices || []).find(x => x.id === +req.params.id);
+  if (!inv?.file) return res.status(404).json({ error: 'No file on this invoice.' });
+  res.json(inv.file);
+});
+
+app.delete('/api/admin/invoices/:id', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const idx = (db.invoices || []).findIndex(x => x.id === +req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
+  const [removed] = db.invoices.splice(idx, 1);
+  logAction('deleted an invoice', `£${removed.amount}`, req);
+  save();
+  res.json({ ok: true });
 });
 
 // ---------- Activity trail: who actioned what ----------
@@ -595,6 +696,8 @@ app.get('/api/admin/summary', requireRole('admin', 'office'), (req, res) => {
   const lowStock = (db.inventory || []).filter(i => i.stock <= i.reorderAt).map(i => ({ name: i.name, stock: i.stock, reorderAt: i.reorderAt }));
   const newApplicants = (db.applications || []).filter(a => a.status === 'new').length;
   const guestyPending = db.bookings.filter(b => b.source === 'guesty' && b.status === 'requested').length;
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const chasing = (db.invoices || []).filter(i => i.status === 'unpaid' && i.dueDate && i.dueDate < todayISO);
   const guestySameDay = db.bookings.filter(b => b.source === 'guesty' && b.status === 'requested' && b.sameDayTurnaround).length;
   res.json({
     complianceAlerts,
@@ -602,6 +705,8 @@ app.get('/api/admin/summary', requireRole('admin', 'office'), (req, res) => {
     newApplicants,
     guestyPending,
     guestySameDay,
+    invoicesChasing: chasing.length,
+    invoicesChasingTotal: round2(chasing.reduce((t, i) => t + i.amount, 0)),
     clients: db.clients.length,
     staff: db.staff.filter(s => s.active).length,
     todayJobs: live.filter(b => b.date === today).map(expandBooking).sort((a, b) => a.start.localeCompare(b.start)),
@@ -792,7 +897,8 @@ app.get('/api/admin/clients/:id', requireRole('admin', 'office'), (req, res) => 
     ...c,
     bookings: db.bookings.filter(b => b.clientId === c.id).map(expandBooking).sort((a, b) => b.date.localeCompare(a.date)),
     messages: db.messages.filter(m => m.clientId === c.id).sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-    payments: db.payments.filter(p => p.clientId === c.id)
+    payments: db.payments.filter(p => p.clientId === c.id),
+    invoices: (db.invoices || []).filter(i => i.clientId === c.id).map(expandInvoice)
   });
 });
 

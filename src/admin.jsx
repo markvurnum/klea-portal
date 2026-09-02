@@ -10,6 +10,7 @@ const NAV = [
   { id: 'staff', label: 'Staff', icon: 'users' },
   { id: 'payroll', label: 'Payroll', icon: 'pound' },
   { id: 'costs', label: 'Costs & stock', icon: 'box' },
+  { id: 'invoices', label: 'Invoices', icon: 'pound' },
   { id: 'reports', label: 'Reports', icon: 'chart' },
   { id: 'messages', label: 'Messages', icon: 'chat' },
   { id: 'guesty', label: 'Guesty', icon: 'key' },
@@ -61,6 +62,7 @@ export default function Admin({ page, user, onSignOut }) {
         {current === 'staff' && <Staff key={refresh} openStaff={id => setDrawer({ type: 'staff', id })} />}
         {current === 'payroll' && <Payroll key={refresh} openPayrollDetail={id => setDrawer({ type: 'payroll', id })} />}
         {current === 'costs' && <Costs key={refresh} />}
+        {current === 'invoices' && <Invoices key={refresh} openClient={id => setDrawer({ type: 'client', id })} />}
         {current === 'reports' && <Reports key={refresh} />}
         {current === 'messages' && <Messages key={refresh} />}
         {current === 'guesty' && <Guesty key={refresh} user={user} openBooking={id => setDrawer({ type: 'booking', id })} />}
@@ -94,6 +96,12 @@ function Dashboard({ openBooking }) {
         <div className="stat"><div className="big">{gbp(sum.revenueBookedAhead)}</div><div className="lbl">Booked ahead</div></div>
         {sum.avgRating && <div className="stat"><div className="big">{sum.avgRating}<span style={{ color: 'var(--ochre)' }}> ★</span></div><div className="lbl">Average clean rating</div></div>}
       </div>
+      {sum.invoicesChasing > 0 && (
+        <div className="demo-banner" style={{ borderColor: 'var(--bad)' }}>
+          💷 <b>{sum.invoicesChasing} invoice{sum.invoicesChasing > 1 ? 's' : ''} overdue, {gbp(sum.invoicesChasingTotal)} to chase</b>
+          {' '}— see <a href="#/admin/invoices">Invoices</a>.
+        </div>
+      )}
       {sum.guestyPending > 0 && (
         <div className="demo-banner" style={{ borderColor: sum.guestySameDay ? 'var(--bad)' : 'var(--warn)' }}>
           🏠 <b>{sum.guestyPending} Guesty changeover{sum.guestyPending > 1 ? 's' : ''} awaiting approval</b>
@@ -436,6 +444,8 @@ function BookingDrawer({ id, onClose }) {
           </p>
         )}
 
+        <JobInvoice booking={b} />
+
         <h3 style={{ fontSize: 15, marginBottom: 6 }}>Checklist — {b.checklistDone}/{b.checklistTotal} done</h3>
         {sections.map(sec => (
           <div key={sec} style={{ marginBottom: 14 }}>
@@ -557,6 +567,8 @@ function ClientDrawer({ id, onClose }) {
             <div style={{ textAlign: 'right' }}><span className={'status ' + b.status}>{b.status.replace('_', ' ')}</span><div><b>{gbp(b.price)}</b></div></div>
           </div>
         ))}
+        <ClientInvoices clientId={c.id} invoices={c.invoices || []} onChanged={() => api.get('/api/admin/clients/' + c.id).then(setC)} />
+
         <h3 style={{ fontSize: 15, margin: '16px 0 8px' }}>Messages</h3>
         {c.messages.length === 0 && <p className="muted small">No messages yet.</p>}
         {c.messages.map(m => (
@@ -1740,5 +1752,200 @@ function NewPasswords() {
       </p>
       <button className="btn gold small" disabled={busy} onClick={run}>{busy ? 'Working…' : 'Generate strong passwords for everyone'}</button>
     </div>
+  );
+}
+
+
+// ---------- Invoices ----------
+const readFileAsDataUrl = file => new Promise((resolve, reject) => {
+  const r = new FileReader();
+  r.onload = () => resolve({ name: file.name, dataUrl: r.result });
+  r.onerror = reject;
+  r.readAsDataURL(file);
+});
+
+function viewInvoiceFile(id, name) {
+  api.get(`/api/admin/invoices/${id}/file`).then(f => {
+    const w = window.open();
+    if (!w) return;
+    w.document.write(`<title>${name}</title><body style="margin:0;background:#222;display:flex;align-items:center;justify-content:center;min-height:100vh">` +
+      (f.dataUrl.startsWith('data:application/pdf')
+        ? `<embed src="${f.dataUrl}" type="application/pdf" style="width:100vw;height:100vh" />`
+        : `<img src="${f.dataUrl}" style="max-width:96vw;max-height:96vh" />`) + '</body>');
+  }).catch(e => window.alert(e.message));
+}
+
+function InvoiceRow({ inv, onChanged, showClient }) {
+  const togglePaid = () =>
+    api.patch('/api/admin/invoices/' + inv.id, { status: inv.status === 'paid' ? 'unpaid' : 'paid' }).then(onChanged);
+  const remove = () => {
+    if (!window.confirm(`Delete invoice ${inv.number} for ${gbp(inv.amount)}?`)) return;
+    api.del('/api/admin/invoices/' + inv.id).then(onChanged);
+  };
+  return (
+    <div className="msg" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+      <div style={{ minWidth: 0 }}>
+        <b>{inv.number}</b> <span className="muted small">{gbp(inv.amount)}</span>
+        {showClient && <div className="small muted">{inv.clientName}</div>}
+        <div className="small muted">
+          Issued {niceDate(inv.issuedDate)} · due {niceDate(inv.dueDate)}
+          {inv.jobLabel && <span> · job {inv.jobLabel}</span>}
+          {inv.status === 'paid' && inv.paidDate && <span> · paid {niceDate(inv.paidDate)}</span>}
+        </div>
+        {inv.notes && <div className="small muted">{inv.notes}</div>}
+      </div>
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+        {inv.needsChasing && <span className="chip bad">{inv.overdueDays} day{inv.overdueDays === 1 ? '' : 's'} overdue</span>}
+        {inv.status === 'paid'
+          ? <span className="chip ok">Paid</span>
+          : !inv.needsChasing && <span className="chip warn">Unpaid</span>}
+        {inv.fileName && <button className="btn ghost small" style={{ padding: '3px 12px' }} onClick={() => viewInvoiceFile(inv.id, inv.fileName)}>View</button>}
+        <button className={'btn small ' + (inv.status === 'paid' ? 'ghost' : 'gold')} style={{ padding: '3px 12px' }} onClick={togglePaid}>
+          {inv.status === 'paid' ? 'Mark unpaid' : 'Mark paid'}
+        </button>
+        <button className="btn ghost small" style={{ padding: '3px 10px', color: 'var(--bad)' }} onClick={remove}>×</button>
+      </div>
+    </div>
+  );
+}
+
+function InvoiceForm({ clientId, bookingId, onDone }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const [form, setForm] = useState({ number: '', amount: '', issuedDate: today, dueDate: '', notes: '' });
+  const [file, setFile] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    setError(''); setBusy(true);
+    try {
+      await api.post('/api/admin/invoices', { ...form, clientId, bookingId, file });
+      setForm({ number: '', amount: '', issuedDate: today, dueDate: '', notes: '' });
+      setFile(null);
+      onDone();
+    } catch (e) { setError(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 12, background: 'var(--surface2)' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 12px' }}>
+        <div className="field" style={{ marginBottom: 10 }}><label>Invoice number (optional)</label>
+          <input value={form.number} onChange={e => setForm({ ...form, number: e.target.value })} placeholder="Left blank, we number it" />
+        </div>
+        <div className="field" style={{ marginBottom: 10 }}><label>Amount £</label>
+          <input value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} placeholder="120" />
+        </div>
+        <div className="field" style={{ marginBottom: 10 }}><label>Issued</label>
+          <input type="date" value={form.issuedDate} onChange={e => setForm({ ...form, issuedDate: e.target.value })} />
+        </div>
+        <div className="field" style={{ marginBottom: 10 }}><label>Due (blank = 14 days)</label>
+          <input type="date" value={form.dueDate} onChange={e => setForm({ ...form, dueDate: e.target.value })} />
+        </div>
+      </div>
+      <div className="field" style={{ marginBottom: 10 }}>
+        <input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} placeholder="Note (optional), e.g. deep clean quoted by phone" />
+      </div>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <label className="btn ghost small">
+          {file ? `✓ ${file.name}` : '📎 Attach invoice (PDF or photo)'}
+          <input type="file" accept="image/*,application/pdf" style={{ display: 'none' }}
+            onChange={async e => { const f = e.target.files[0]; if (f) setFile(await readFileAsDataUrl(f)); e.target.value = ''; }} />
+        </label>
+        <button className="btn gold small" onClick={submit} disabled={busy || !form.amount}>{busy ? 'Saving…' : 'Save invoice'}</button>
+      </div>
+      {error && <p className="small" style={{ color: 'var(--bad)', marginTop: 8 }}>{error}</p>}
+    </div>
+  );
+}
+
+function ClientInvoices({ clientId, invoices, onChanged }) {
+  const [adding, setAdding] = useState(false);
+  const outstanding = invoices.filter(i => i.status === 'unpaid').reduce((t, i) => t + i.amount, 0);
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '16px 0 8px' }}>
+        <h3 style={{ fontSize: 15 }}>Invoices{outstanding > 0 && <span className="chip warn" style={{ marginLeft: 8 }}>{gbp(outstanding)} outstanding</span>}</h3>
+        <button className="btn ghost small" onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Add invoice'}</button>
+      </div>
+      {adding && <InvoiceForm clientId={clientId} bookingId={null} onDone={() => { setAdding(false); onChanged(); }} />}
+      {invoices.length === 0 && !adding && <p className="muted small">No invoices yet. Use this for clients who came direct rather than booking online.</p>}
+      {invoices.map(inv => <InvoiceRow key={inv.id} inv={inv} onChanged={onChanged} />)}
+    </>
+  );
+}
+
+function JobInvoice({ booking }) {
+  const [rows, setRows] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const load = () => api.get('/api/admin/invoices').then(r => setRows(r.invoices.filter(i => i.bookingId === booking.id)));
+  useEffect(() => { load(); }, [booking.id]);
+  if (!rows) return null;
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '14px 0 6px' }}>
+        <h3 style={{ fontSize: 15 }}>Invoice for this job</h3>
+        <button className="btn ghost small" onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Add'}</button>
+      </div>
+      {adding && <InvoiceForm clientId={booking.clientId} bookingId={booking.id} onDone={() => { setAdding(false); load(); }} />}
+      {rows.length === 0 && !adding && <p className="small muted" style={{ marginBottom: 12 }}>None attached.</p>}
+      {rows.map(inv => <InvoiceRow key={inv.id} inv={inv} onChanged={load} />)}
+    </>
+  );
+}
+
+function Invoices({ openClient }) {
+  const [data, setData] = useState(null);
+  const [filter, setFilter] = useState('chasing');
+  const [adding, setAdding] = useState(false);
+  const [clients, setClients] = useState([]);
+  const [pickClient, setPickClient] = useState('');
+  const load = () => api.get('/api/admin/invoices').then(setData);
+  useEffect(() => { load(); api.get('/api/admin/clients').then(setClients); }, []);
+  if (!data) return <p className="muted">Loading…</p>;
+
+  const shown = data.invoices.filter(i =>
+    filter === 'chasing' ? i.needsChasing
+      : filter === 'unpaid' ? i.status === 'unpaid'
+        : filter === 'paid' ? i.status === 'paid'
+          : true);
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>Invoices</h1>
+        <button className="btn gold small" onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Add invoice'}</button>
+      </div>
+      <p className="muted">For clients who came direct. Upload the invoice, mark it paid when the money lands, and anything overdue flags itself.</p>
+
+      <div className="stat-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
+        <div className="stat"><div className="big">{gbp(data.outstanding)}</div><div className="lbl">Outstanding</div></div>
+        <div className="stat"><div className="big" style={data.chasing ? { color: 'var(--bad)' } : {}}>{gbp(data.overdue)}</div><div className="lbl">Overdue</div></div>
+        <div className="stat"><div className="big" style={data.chasing ? { color: 'var(--bad)' } : {}}>{data.chasing}</div><div className="lbl">Need chasing</div></div>
+      </div>
+
+      {adding && (
+        <div className="card" style={{ marginBottom: 16 }}>
+          <div className="field"><label>Client</label>
+            <select value={pickClient} onChange={e => setPickClient(e.target.value)}>
+              <option value="">Choose a client…</option>
+              {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          {pickClient && <InvoiceForm clientId={pickClient} bookingId={null} onDone={() => { setAdding(false); setPickClient(''); load(); }} />}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, margin: '10px 0 14px', flexWrap: 'wrap' }}>
+        {[['chasing', 'Needs chasing'], ['unpaid', 'Unpaid'], ['paid', 'Paid'], ['all', 'All']].map(([k, label]) => (
+          <button key={k} className={'btn small ' + (filter === k ? 'gold' : 'ghost')} onClick={() => setFilter(k)}>{label}</button>
+        ))}
+      </div>
+
+      {shown.length === 0 && (
+        <p className="muted">{filter === 'chasing' ? 'Nothing overdue. All invoices are within their terms.' : 'Nothing here.'}</p>
+      )}
+      {shown.map(inv => <InvoiceRow key={inv.id} inv={inv} onChanged={load} showClient />)}
+    </>
   );
 }

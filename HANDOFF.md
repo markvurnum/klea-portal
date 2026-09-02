@@ -1,5 +1,17 @@
 # Klea — HANDOFF
 
+## 2026-09-02 — Invoices with paid/unpaid and overdue chasing
+
+For clients who come direct rather than booking online. `db.invoices`: `{ clientId, bookingId?, number, amount, issuedDate, dueDate, status, paidDate, file, notes }`.
+- **New Invoices page** (admin nav): outstanding / overdue / need-chasing totals, filters (Needs chasing, Unpaid, Paid, All), add invoice against any client.
+- **Also in the client drawer** ("Invoices" with an outstanding chip) and **in the job sheet** ("Invoice for this job"), so an invoice can hang off a client or a specific booking.
+- Upload a PDF or photo of the invoice, view it later in a new tab. Non PDF/image uploads rejected, 4MB cap.
+- Due date defaults to 14 day terms if left blank. Unpaid + past due = `needsChasing`, shown as a red "N days overdue" chip, counted on the Invoices page and flagged on the dashboard.
+- Mark paid / mark unpaid toggle, records the paid date. All actions go to the activity trail.
+- Verified end to end: overdue invoice correctly flagged 6 days over, within-terms one correctly not flagged, marking paid cleared the chase, file retrievable, bad file type rejected, dashboard counter correct.
+
+NOTE: invoice files are stored as data URLs in the JSON database, same as staff documents. Fine at this size; for real volume they should move to object storage.
+
 ## 2026-09-02 — Code backed up to GitHub
 
 **Repo: https://github.com/markvurnum/klea-portal (PRIVATE)** — 5 commits, 28 files, all pushed.

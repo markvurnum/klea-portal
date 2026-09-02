@@ -279,6 +279,7 @@ export function seed() {
     staff, clients, bookings, messages, payments, payouts, inventory, expenses, applications,
     timesheets: [],
     absences: [],
+    invoices: [],
     settings: {
       businessName: 'Klea', currency: 'GBP', dayStart: '07:00', dayEnd: '19:00',
       bookingMode: 'instant',
