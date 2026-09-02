@@ -1,0 +1,250 @@
+<title>The Klea Platform</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap">
+<style>
+  :root {
+    --bg: #FBF8F1;
+    --surface: #FFFFFF;
+    --surface2: #F3EDE2;
+    --ink: #3B332A;
+    --muted: #8C8174;
+    --espresso: #2B241C;
+    --espresso-ink: #F3EDE2;
+    --terra: #B5764C;
+    --sand: #D8BFA3;
+    --ochre: #C9A36A;
+    --line: #E7DECD;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #241E17; --surface: #2B241C; --surface2: #3B332A;
+      --ink: #F3EDE2; --muted: #B0A392; --espresso: #1C1712;
+      --line: #453B30; --terra: #C98A5D;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #241E17; --surface: #2B241C; --surface2: #3B332A;
+    --ink: #F3EDE2; --muted: #B0A392; --espresso: #1C1712;
+    --line: #453B30; --terra: #C98A5D;
+  }
+
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: 'DM Sans', -apple-system, sans-serif;
+    font-size: 15.5px; line-height: 1.6;
+  }
+  h1, h2, h3 { font-family: 'Fraunces', Georgia, serif; font-weight: 500; letter-spacing: -0.01em; text-wrap: balance; }
+  main { max-width: 720px; margin: 0 auto; padding: 0 22px 90px; }
+
+  .hero {
+    background: var(--espresso); color: var(--espresso-ink);
+    text-align: center; padding: 58px 22px 54px; margin-bottom: 44px;
+  }
+  .hero .wordmark { font-family: 'Fraunces', Georgia, serif; font-size: 34px; color: #FBF8F1; }
+  .hero .wordmark .sp { color: var(--ochre); font-size: 0.6em; vertical-align: 0.55em; }
+  .eyebrow {
+    text-transform: uppercase; letter-spacing: 0.2em; font-size: 11.5px; font-weight: 600;
+    color: var(--sand);
+  }
+  .hero p.sub { color: #D8C9B6; max-width: 460px; margin: 10px auto 0; }
+
+  section { margin-bottom: 42px; }
+  section > h2 { font-size: 24px; margin-bottom: 6px; }
+  section > p.lede { color: var(--muted); margin-bottom: 18px; }
+  .label { text-transform: uppercase; letter-spacing: 0.16em; font-size: 11px; font-weight: 700; color: var(--terra); }
+
+  .loop {
+    display: flex; flex-wrap: wrap; gap: 6px 4px; align-items: center;
+    background: var(--surface2); border-radius: 14px; padding: 14px 16px; margin-top: 14px;
+    font-weight: 600; font-size: 13.5px;
+  }
+  .loop .arr { color: var(--ochre); font-weight: 400; padding: 0 3px; }
+
+  .step {
+    display: grid; grid-template-columns: 44px 1fr; gap: 16px;
+    padding: 20px 0; border-bottom: 1px solid var(--line);
+  }
+  .step:last-child { border-bottom: none; }
+  .step .n {
+    font-family: 'Fraunces', Georgia, serif; font-size: 24px; color: var(--terra);
+    border: 1.5px solid var(--line); border-radius: 999px; width: 44px; height: 44px;
+    display: flex; align-items: center; justify-content: center; background: var(--surface);
+  }
+  .step h3 { font-size: 18px; margin-bottom: 2px; }
+  a.url { text-decoration: none; }
+  .url {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px;
+    color: var(--terra); background: var(--surface2); border-radius: 6px; padding: 2px 8px;
+    display: inline-block; margin: 4px 0 8px;
+  }
+  .step p { margin-bottom: 6px; }
+  .step .say { color: var(--muted); }
+  .step .say b { color: var(--ink); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+  th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  td { padding: 11px 16px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td:first-child { font-weight: 600; white-space: nowrap; }
+
+  .pill { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; font-weight: 700; }
+  .pill.live { background: rgba(125,146,113,0.16); color: #7d9271; }
+  .pill.demo { background: var(--surface2); color: var(--ochre); }
+
+  .note {
+    border: 1px dashed var(--ochre); border-radius: 12px; padding: 12px 16px;
+    background: var(--surface2); font-size: 14px; margin-top: 14px;
+  }
+  code.cmd {
+    display: block; background: var(--espresso); color: var(--espresso-ink);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px;
+    border-radius: 10px; padding: 12px 16px; margin: 10px 0; overflow-x: auto;
+  }
+  ul.tight { padding-left: 20px; }
+  ul.tight li { margin-bottom: 6px; }
+  @media print { .faq-page { break-before: page; } }
+  @media (max-width: 560px) { .step { grid-template-columns: 34px 1fr; gap: 12px; } .step .n { width: 34px; height: 34px; font-size: 18px; } }
+</style>
+
+<div class="hero">
+  <div class="eyebrow">Prepared for Klea Home</div>
+  <div class="wordmark" style="margin: 14px 0 6px;">klea<span class="sp">✦</span></div>
+  <p class="sub">Your whole cleaning business, running in one place. And it is already live.</p>
+</div>
+
+<main>
+  <section>
+    <h2>Everything your website promises, working today</h2>
+    <p>Every promise on kleahome.co.uk is working software here. A client books and pays online in two minutes. The closest vetted Kleaner is matched by postcode patch, the reminder goes out by itself, your cleaner works from a phone checklist with photo evidence, the client can move or cancel under your own cancellation policy, wages accrue automatically, and every pound lands in a live profit and loss. No spreadsheets, no WhatsApp rota, no chasing.</p>
+    <div class="loop">
+      Client books <span class="arr">→</span> Kleaner auto-matched <span class="arr">→</span> reminder sent <span class="arr">→</span> clean worked on phone <span class="arr">→</span> photos + rating <span class="arr">→</span> wages accrue <span class="arr">→</span> P&amp;L updates
+    </div>
+  </section>
+
+  <section>
+    <h2>See it live</h2>
+    <p class="lede">It is on the internet now. Open it on your phone while you read this.</p>
+    <p><b>URL:</b> <a class="url" href="https://klea-demo-production.up.railway.app">klea-demo-production.up.railway.app</a></p>
+    <p><b>Your office login:</b> <span class="url">hello@kleahome.co.uk</span> / <span class="url">KleaAdmin2026!</span><br>
+    <b>A Kleaner login, to see their side:</b> <span class="url">sophie@kleahome.co.uk</span> / <span class="url">Kleaner2026!</span></p>
+    <p class="say">Sign in as the Kleaner to see what your team sees: their own jobs and rota, and no pricing anywhere.</p>
+    <p>It comes loaded with a realistic demo business: six Kleaners, nine clients and three months of trading history, so you can see every screen doing real work.</p>
+    <div class="note">This was built around your business: your services, your prices, your FAQs and your cancellation policy, taken straight from <a href="https://kleahome.co.uk" style="color: var(--terra);">kleahome.co.uk</a>.</div>
+  </section>
+
+  <section>
+    <div class="label">The tour</div>
+    <h2>Eight parts of your platform</h2>
+
+    <div class="step">
+      <div class="n">1</div>
+      <div>
+        <h3>Your clients book in two minutes</h3>
+        <a class="url" href="https://klea-demo-production.up.railway.app/#/">klea-demo-production.up.railway.app/#/</a>
+        <p>Try booking a weekly clean for a 3-bed, add an oven clean and a Team Clean, and pay with any card number.</p>
+        <p class="say">Notice: your FAQs on the page, the postcode coverage check, flat-priced add-ons, the <b>reset clean first visit</b> with your weekly rate from visit two, and Kleaners shown with photo, profile line and DBS badge, closest patch first.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">2</div>
+      <div>
+        <h3>Your ops room sees it instantly</h3>
+        <a class="url" href="https://klea-demo-production.up.railway.app/#/admin">klea-demo-production.up.railway.app/#/admin</a>
+        <p>Every booking lands on the dashboard and the weekly rota the moment it is made, already assigned to the right Kleaner.</p>
+        <p class="say">Notice: jobs cluster by <b>postcode patch</b> so travel stays tight, and any empty rota slot books a job with one click. The dashboard also flags low stock and compliance renewals by itself.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">3</div>
+      <div>
+        <h3>Your Kleaner's whole shift, on their phone</h3>
+        <a class="url" href="https://klea-demo-production.up.railway.app/#/cleaner">klea-demo-production.up.railway.app/#/cleaner</a>
+        <p>Every Kleaner gets their own login. Sign in as Sophie and open a job: one-tap call to the client, key and access notes, the full Klea Standard checklist, photo upload, Start and Finish.</p>
+        <p class="say">They see their own jobs and their own rota, nothing else, and <b>never what you charge</b>. The checklist is the one from your website, so a domestic clean ticks the standard items and a deep clean ticks the extras too.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">4</div>
+      <div>
+        <h3>Your clients help themselves</h3>
+        <a class="url" href="https://klea-demo-production.up.railway.app/#/my">klea-demo-production.up.railway.app/#/my</a>
+        <p>Sign in as <b>hannah.price@example.com</b>. Clients move or cancel their own cleans, see the photos of every finished clean, and leave the star rating.</p>
+        <p class="say">Your policy is enforced by the software itself: free changes until midday the day before, a 50% fee after, exactly as your FAQ promises. No awkward phone calls.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">5</div>
+      <div>
+        <h3>Compliance that watches itself</h3>
+        <a class="url" href="https://klea-demo-production.up.railway.app/#/admin/staff">klea-demo-production.up.railway.app/#/admin/staff</a>
+        <p>A full legal file for every Kleaner: right to work, DBS certificate and recheck date, training, contract, emergency contact. Company insurance and registrations alongside.</p>
+        <p class="say">Anything within 60 days of renewal turns amber and appears on the dashboard, so nothing lapses quietly.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">6</div>
+      <div>
+        <h3>Payroll that pays itself out</h3>
+        <a class="url" href="https://klea-demo-production.up.railway.app/#/admin/payroll">klea-demo-production.up.railway.app/#/admin/payroll</a>
+        <p>Wages accrue from completed cleans at each Kleaner's hourly rate. One click pays out what is due, with full history.</p>
+        <p class="say">Your <b>"paid weekly, every week"</b> promise to Kleaners, kept automatically.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">7</div>
+      <div>
+        <h3>Your money, in one honest view</h3>
+        <a class="url" href="https://klea-demo-production.up.railway.app/#/admin/costs">klea-demo-production.up.railway.app/#/admin/costs</a>
+        <p>Stock levels for the Klea kit with reorder alerts, and an expense ledger where buying supplies books the cost automatically. Then open <a class="url" href="https://klea-demo-production.up.railway.app/#/admin/reports">#/admin/reports</a>: a monthly profit and loss built from real revenue, real wages and real spend.</p>
+        <p class="say">The whole business, from a client tapping "Book a clean" to your net margin, in one place.</p>
+      </div>
+    </div>
+
+    <div class="step">
+      <div class="n">8</div>
+      <div>
+        <h3>Hiring, built in</h3>
+        <a class="url" href="https://klea-demo-production.up.railway.app/#/join">klea-demo-production.up.railway.app/#/join</a>
+        <p>A Become a Kleaner page carrying your own recruitment promises: choose your hours, we find your customers, paid weekly, first year's insurance covered. Applications take two minutes, no CV needed.</p>
+        <p class="say">Every application lands in your hiring pipeline on the Staff page. One click on <b>Hire</b> creates their cleaner file, with right to work, DBS, contract and training all flagged until onboarding is complete. Recruit to rota without a single spreadsheet.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Built already, and what we connect at launch</h2>
+    <p class="lede">The platform is complete. Going live is a connection exercise, not a build.</p>
+    <div class="tbl-wrap">
+      <table>
+        <tr><th>Area</th><th>Status</th><th>At launch</th></tr>
+        <tr><td>Booking, pricing, scheduling</td><td><span class="pill live">Built</span></td><td>Ready as it stands</td></tr>
+        <tr><td>Checklists, photos, ratings</td><td><span class="pill live">Built</span></td><td>Ready as it stands</td></tr>
+        <tr><td>Payroll, stock, costs, P&amp;L</td><td><span class="pill live">Built</span></td><td>Ready as it stands</td></tr>
+        <tr><td>Card payments</td><td><span class="pill demo">To connect</span></td><td>Your Stripe account, money straight to you</td></tr>
+        <tr><td>Texts and emails</td><td><span class="pill demo">To connect</span></td><td>Real sending in your name</td></tr>
+        <tr><td>Logins</td><td><span class="pill demo">To connect</span></td><td>Secure accounts for team, Kleaners and clients</td></tr>
+        <tr><td>Your domain</td><td><span class="pill demo">To connect</span></td><td>Runs at a kleahome.co.uk address, one DNS record</td></tr>
+      </table>
+    </div>
+    <div class="note">Kleaner photos in the demo are placeholders. At launch we load your real team, your coverage postcodes and your photography.</div>
+  </section>
+
+  <section class="faq-page">
+    <h2>FAQs</h2>
+    <ul class="tight">
+      <li><b>Can we change prices, services and add-ons?</b> Yes. The whole catalogue, services, upsells, discounts, checklists and FAQs, is yours to change whenever you like.</li>
+      <li><b>Does it cover our area?</b> The coverage check is one setting. We switch it to your Fylde Coast postcodes in a minute.</li>
+      <li><b>What does it cost to run?</b> Hosting is around £5 to £10 a month, plus normal card fees and pennies per text. No per-seat software fees, no lock-in.</li>
+      <li><b>How quickly could we launch?</b> About a week once payments and messaging are connected: we plug in Stripe, text and email sending, secure logins and your domain, then load your real team and prices.</li>
+      <li><b>Is our data ours?</b> Yes. It runs on its own standalone database, shared with nothing and nobody else, and exportable at any time.</li>
+    </ul>
+  </section>
+</main>
