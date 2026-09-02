@@ -223,9 +223,12 @@ app.patch('/api/admin/users/:id', requireRole('admin'), (req, res) => {
 app.post('/api/admin/reset-demo', requireRole('admin'), (req, res) => {
   const db = getDb();
   const users = db.users, sessions = db.sessions;
+  // Guesty rate-limits sign-ins hard, so the access token must survive a reset
+  const guestyToken = db.settings?.guestyToken;
   const fresh = seed();
   for (const k of Object.keys(db)) delete db[k];
   Object.assign(db, fresh, { users, sessions, activity: [] });
+  if (guestyToken) db.settings.guestyToken = guestyToken;
   logAction('reset the demo data', '', req);
   save();
   res.json({ ok: true });
