@@ -1372,10 +1372,25 @@ function Activity() {
       <h1>Activity</h1>
       <p className="muted" style={{ marginBottom: 16 }}>A running trail of who actioned what, taken from who was signed in at the time.</p>
       <div className="demo-banner" style={{ marginBottom: 16 }}>
-        Demo tool: <button className="btn ghost small" style={{ marginLeft: 6 }}
-          onClick={() => { if (window.confirm('Reset all demo data back to the starting point? Team logins are kept.')) api.post('/api/admin/reset-demo').then(() => window.location.reload()); }}>
-          Reset demo data
-        </button>
+        <b>Demo tools</b>
+        <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+          <button className="btn ghost small"
+            onClick={() => { if (window.confirm('Reset all demo data back to the starting point? Team logins are kept.')) api.post('/api/admin/reset-demo').then(() => window.location.reload()); }}>
+            Reset demo data
+          </button>
+          <button className="btn ghost small" style={{ color: 'var(--bad)', borderColor: 'var(--bad)' }}
+            onClick={async () => {
+              const ok = window.prompt('This clears every demo client, booking and Kleaner so you can start trading for real. Your logins and price list are kept.\n\nType START FRESH to confirm:');
+              if (ok !== 'START FRESH') return;
+              try { await api.post('/api/admin/start-fresh', { confirm: 'START FRESH' }); window.location.reload(); }
+              catch (e) { window.alert(e.message); }
+            }}>
+            Clear everything and go live
+          </button>
+        </div>
+        <p className="small muted" style={{ marginTop: 8, marginBottom: 0 }}>
+          Use "Clear everything" once, on the day you start trading for real. It empties the demo people and jobs, ready for your own.
+        </p>
       </div>
       {rows.length === 0 && <p className="muted">Nothing recorded yet.</p>}
       <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
@@ -1437,6 +1452,7 @@ function Logins() {
         <button className="btn gold small" onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Add login'}</button>
       </div>
       <p className="muted" style={{ margin: '6px 0 14px' }}>Every team member gets their own login, so the activity trail shows who did what.</p>
+      <NewPasswords />
 
       {adding && (
         <div className="card" style={{ marginBottom: 16 }}>
@@ -1684,6 +1700,45 @@ function TimeOff({ staff, absences, onChanged }) {
           ))}
         </>
       )}
+    </div>
+  );
+}
+
+
+// Generate strong passwords for everyone, shown once for copying
+function NewPasswords() {
+  const [issued, setIssued] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async () => {
+    const ok = window.prompt('This replaces the password for EVERY login with a strong random one and signs everyone out.\n\nYou will see the new passwords once, so have somewhere ready to save them.\n\nType NEW PASSWORDS to confirm:');
+    if (ok !== 'NEW PASSWORDS') return;
+    setBusy(true);
+    try { const r = await api.post('/api/admin/users/regenerate-passwords', { confirm: 'NEW PASSWORDS' }); setIssued(r.issued); }
+    catch (e) { window.alert(e.message); }
+    setBusy(false);
+  };
+
+  if (issued) {
+    const text = issued.map(i => `${i.role.toUpperCase()}  ${i.name}  ${i.email}  ${i.password}`).join('\n');
+    return (
+      <div className="demo-banner" style={{ borderColor: 'var(--good)', marginBottom: 16 }}>
+        <b>✓ New passwords set. This is the only time they are shown.</b>
+        <p className="small" style={{ margin: '6px 0' }}>Copy them into a password manager now, then give each person theirs. Everyone has been signed out.</p>
+        <pre style={{ background: 'var(--surface)', border: '1px solid var(--line)', borderRadius: 10, padding: 12, fontSize: 12.5, overflowX: 'auto', margin: '8px 0' }}>{text}</pre>
+        <button className="btn ghost small" onClick={() => { navigator.clipboard?.writeText(text); }}>Copy all</button>
+        <button className="btn ghost small" style={{ marginLeft: 8 }} onClick={() => setIssued(null)}>Hide</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="demo-banner" style={{ marginBottom: 16 }}>
+      <b>Before you go live</b>
+      <p className="small" style={{ margin: '6px 0' }}>
+        The starting passwords are simple and have been shared in documents. Replace them all with strong ones before any real staff or client data goes in.
+      </p>
+      <button className="btn gold small" disabled={busy} onClick={run}>{busy ? 'Working…' : 'Generate strong passwords for everyone'}</button>
     </div>
   );
 }

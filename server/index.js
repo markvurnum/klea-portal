@@ -6,6 +6,7 @@ import { seed } from './seed.js';
 import { SERVICES, ADDONS, FREQUENCIES, FAQS, quote, checklistFor } from './catalogue.js';
 import { proximityScore, proximityLabel, outcode } from './geo.js';
 import { isConfigured as guestyConfigured, fetchListings, fetchReservations, importReservations, CHANGEOVER_START, CHANGEOVER_END } from './guesty.js';
+import crypto from 'crypto';
 import { attachUser, requireRole, requireSelfOrOffice, verifyPassword, hashPassword, issueToken, logAction, seedUsers } from './auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -337,6 +338,35 @@ app.post('/api/admin/start-fresh', requireRole('admin'), (req, res) => {
   logAction('cleared all data for go-live', '', req);
   save();
   res.json({ ok: true, keptLogins: keptUsers.length });
+});
+
+// Generate strong passwords for every login. Returned ONCE, never stored in
+// readable form, so they can be copied into a password manager.
+const PW_WORDS = ['harbour','lantern','copper','willow','marble','thistle','beacon','cobble','saffron','amber','quarry','meadow','pebble','birch','cinder','otter','pewter','fennel','walnut','heather'];
+function strongPassword() {
+  const pick = a => a[crypto.randomInt(a.length)];
+  return [pick(PW_WORDS), pick(PW_WORDS), pick(PW_WORDS)]
+    .map(w => w[0].toUpperCase() + w.slice(1)).join('-')
+    + crypto.randomInt(10, 100) + pick(['!', '#', '@']);
+}
+
+app.post('/api/admin/users/regenerate-passwords', requireRole('admin'), (req, res) => {
+  if (req.body.confirm !== 'NEW PASSWORDS') {
+    return res.status(400).json({ error: 'Type NEW PASSWORDS to confirm. Everyone will be signed out.' });
+  }
+  const db = getDb();
+  const issued = [];
+  for (const u of db.users || []) {
+    const pw = strongPassword();
+    u.password = hashPassword(pw);
+    issued.push({ name: u.name, email: u.email, role: u.role, password: pw });
+  }
+  // Everyone must sign in again with the new password
+  const myToken = (req.headers.authorization || '').replace('Bearer ', '');
+  db.sessions = (db.sessions || []).filter(s => s.token === myToken);
+  logAction('generated new passwords for everyone', `${issued.length} logins`, req);
+  save();
+  res.json({ issued });
 });
 
 // ---------- Activity trail: who actioned what ----------

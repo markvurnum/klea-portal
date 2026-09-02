@@ -9,8 +9,7 @@
     "dev:web": "vite --port 4601 --strictPort",
     "build": "vite build",
     "start": "NODE_ENV=production node server/index.js",
-    "keys": "node key-form.js",
-    "passwords": "node set-passwords.js"
+    "keys": "node key-form.js"
   },
   "dependencies": {
     "express": "^4.19.2"
