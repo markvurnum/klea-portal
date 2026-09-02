@@ -27,7 +27,10 @@ export function isConfigured() {
 // Guesty rate-limits the token endpoint hard, and an in-memory cache is lost on
 // every restart or deploy, burning a request each time. Persist it so a restart
 // reuses the token it already has.
-let memoryToken = null; // fallback when the database is not loaded (scripts, tests)
+let memoryToken = null;   // fallback when the database is not loaded (scripts, tests)
+let blockedUntil = 0;     // set when Guesty rate-limits us, so we stop hammering
+
+const RATE_LIMIT_COOLDOWN_MINS = 20;
 
 function storedToken() {
   const db = getDb();
@@ -50,6 +53,13 @@ export async function getAccessToken() {
   const existing = storedToken();
   if (existing) return existing.token;
 
+  // Repeatedly retrying during a lockout can extend it, so once Guesty says no
+  // we wait properly rather than trying again every few seconds.
+  if (blockedUntil > Date.now()) {
+    const mins = Math.ceil((blockedUntil - Date.now()) / 60000);
+    throw new Error(`Guesty limited our sign-ins. Waiting ${mins} more minute${mins === 1 ? '' : 's'} before trying again.`);
+  }
+
   const body = new URLSearchParams({
     grant_type: 'client_credentials',
     scope: 'open-api',
@@ -58,24 +68,23 @@ export async function getAccessToken() {
   });
   // Guesty rate-limits the token endpoint hard, so back off and retry rather
   // than reporting a credential problem that does not exist.
-  let res;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    res = await fetch(TOKEN_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
-      body
-    });
-    if (res.status !== 429) break;
-    await new Promise(r => setTimeout(r, 5000 * (attempt + 1)));
-  }
+  // One attempt only. If Guesty says no, back off for a proper interval rather
+  // than retrying immediately, which is what keeps a lockout alive.
+  const res = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body
+  });
   if (res.status === 401 || res.status === 403) {
     throw new Error('Guesty rejected the credentials. Check the Client ID and Secret.');
   }
   if (res.status === 429) {
-    throw new Error('Guesty is rate limiting us. Wait a minute and try the sync again.');
+    blockedUntil = Date.now() + RATE_LIMIT_COOLDOWN_MINS * 60000;
+    throw new Error(`Guesty limited our sign-ins. Backing off for ${RATE_LIMIT_COOLDOWN_MINS} minutes, then it will retry by itself.`);
   }
   if (!res.ok) throw new Error(`Guesty sign-in failed (${res.status}).`);
   const data = await res.json();
+  blockedUntil = 0;
   storeToken(data.access_token, data.expires_in);
   return data.access_token;
 }
