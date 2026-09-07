@@ -600,7 +600,7 @@ app.post('/api/bookings', (req, res) => {
   const q = quote({ serviceId, size, addonIds, frequency, teamClean });
 
   // find or create client
-  let c = db.clients.find(x => x.email.toLowerCase() === client.email.toLowerCase());
+  let c = client.email ? db.clients.find(x => (x.email || '').toLowerCase() === client.email.toLowerCase()) : null;
   if (!c) {
     c = { id: nextId('clients'), name: client.name, email: client.email, phone: client.phone || '', postcode: client.postcode, address: client.address || '', type: 'residential', notes: '' };
     db.clients.push(c);
@@ -850,12 +850,20 @@ app.post('/api/admin/bookings/:id/checklist/:itemId', requireRole('admin', 'offi
 
 app.post('/api/admin/clients', requireRole('admin', 'office'), (req, res) => {
   const db = getDb();
-  const { name, email, phone = '', postcode = '', address = '', type = 'residential', notes = '' } = req.body;
-  if (!name || !email) return res.status(400).json({ error: 'Name and email are required.' });
-  if (db.clients.some(c => c.email.toLowerCase() === email.toLowerCase())) {
+  const { name, email = '', phone = '', postcode = '', address = '', type = 'residential', notes = '' } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Please enter the client\'s name.' });
+  if (!email.trim() && !phone.trim()) {
+    return res.status(400).json({ error: 'Add an email or a phone number so you can contact them.' });
+  }
+  // Email is optional, but must be unique when given, since clients sign in
+  // to the "My cleans" portal with it
+  if (email.trim() && db.clients.some(c => (c.email || '').toLowerCase() === email.trim().toLowerCase())) {
     return res.status(409).json({ error: 'A client with that email already exists.' });
   }
-  const c = { id: nextId('clients'), name, email, phone, postcode: postcode.toUpperCase(), address, type, notes };
+  const c = {
+    id: nextId('clients'), name: name.trim(), email: email.trim(), phone: phone.trim(),
+    postcode: postcode.toUpperCase().trim(), address, type, notes
+  };
   db.clients.push(c);
   logAction('added a client', c.name, req);
   save();
@@ -887,6 +895,24 @@ app.patch('/api/admin/clients/:id', requireRole('admin', 'office'), (req, res) =
   logAction('updated a client', c.name, req);
   save();
   res.json(c);
+});
+
+app.delete('/api/admin/clients/:id', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const c = db.clients.find(x => x.id === +req.params.id);
+  if (!c) return res.status(404).json({ error: 'Not found' });
+  const live = db.bookings.filter(b => b.clientId === c.id && b.status !== 'cancelled' && b.status !== 'completed');
+  if (live.length && !req.body?.force) {
+    return res.status(409).json({ error: `${c.name} still has ${live.length} clean${live.length > 1 ? 's' : ''} booked. Cancel or complete those first.` });
+  }
+  db.clients = db.clients.filter(x => x.id !== c.id);
+  db.bookings = db.bookings.filter(b => b.clientId !== c.id);
+  db.invoices = (db.invoices || []).filter(i => i.clientId !== c.id);
+  db.messages = db.messages.filter(m => m.clientId !== c.id);
+  db.payments = db.payments.filter(p => p.clientId !== c.id);
+  logAction('deleted a client', c.name, req);
+  save();
+  res.json({ ok: true });
 });
 
 app.get('/api/admin/clients/:id', requireRole('admin', 'office'), (req, res) => {
@@ -963,7 +989,7 @@ app.post('/api/apply', (req, res) => {
   const { name, email, phone = '', postcode = '', transport = '', days = [], hours = '', experience = '', rightToWork = '', dbs = '', about = '' } = req.body;
   if (!name || !email || !postcode) return res.status(400).json({ error: 'Name, email and postcode are required.' });
   if (!db.applications) db.applications = [];
-  if (db.applications.some(a => a.email.toLowerCase() === email.toLowerCase() && a.status !== 'rejected')) {
+  if (db.applications.some(a => (a.email || '').toLowerCase() === String(email).toLowerCase() && a.status !== 'rejected')) {
     return res.status(409).json({ error: 'We already have an application from that email. We will be in touch soon.' });
   }
   const a = {
@@ -1124,7 +1150,9 @@ app.delete('/api/staff/:id/documents/:docId', requireRole('admin', 'office', 'kl
 // ---------- Client portal (demo: email lookup, no password) ----------
 function portalClient(email) {
   const db = getDb();
-  return db.clients.find(c => c.email.toLowerCase() === String(email || '').toLowerCase());
+  const wanted = String(email || '').trim().toLowerCase();
+  if (!wanted) return null;
+  return db.clients.find(c => (c.email || '').toLowerCase() === wanted);
 }
 
 app.post('/api/portal/lookup', (req, res) => {

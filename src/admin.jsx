@@ -470,19 +470,35 @@ function Clients({ openClient }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: '', email: '', phone: '', postcode: '', address: '', type: 'residential', notes: '' });
   const [error, setError] = useState('');
+  const [saved, setSaved] = useState('');
+  const [saving, setSaving] = useState(false);
   const load = () => api.get('/api/admin/clients').then(setRows);
   useEffect(() => { load(); }, []);
   if (!rows) return <p className="muted">Loading…</p>;
 
   const addClient = async () => {
-    setError('');
-    if (!form.name || !form.email) { setError('Name and email are required.'); return; }
+    setError(''); setSaved('');
+    if (!form.name.trim()) { setError('Please enter the client\'s name.'); return; }
+    if (!form.email.trim() && !form.phone.trim()) {
+      setError('Add an email or a phone number so you can contact them.'); return;
+    }
+    setSaving(true);
     try {
-      await api.post('/api/admin/clients', form);
+      const c = await api.post('/api/admin/clients', form);
       setForm({ name: '', email: '', phone: '', postcode: '', address: '', type: 'residential', notes: '' });
       setAdding(false);
-      load();
+      setSaved(`${c.name} added.`);
+      setTimeout(() => setSaved(''), 4000);
+      await load();
     } catch (e) { setError(e.message); }
+    setSaving(false);
+  };
+
+  const removeClient = async (e, c) => {
+    e.stopPropagation();
+    if (!window.confirm(`Remove ${c.name}? This also removes their bookings, invoices and messages.`)) return;
+    try { await api.del('/api/admin/clients/' + c.id); load(); }
+    catch (err) { window.alert(err.message); }
   };
 
   return (
@@ -494,8 +510,8 @@ function Clients({ openClient }) {
       {adding && (
         <div className="card" style={{ margin: '14px 0' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 14px' }}>
-            <div className="field"><label>Name</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
-            <div className="field"><label>Email</label><input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} /></div>
+            <div className="field"><label>Name (required)</label><input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
+            <div className="field"><label>Email (optional)</label><input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="Needed only for their own login" /></div>
             <div className="field"><label>Phone</label><input value={form.phone} onChange={e => setForm({ ...form, phone: e.target.value })} /></div>
             <div className="field"><label>Postcode</label><input value={form.postcode} onChange={e => setForm({ ...form, postcode: e.target.value.toUpperCase() })} /></div>
             <div className="field"><label>Address</label><input value={form.address} onChange={e => setForm({ ...form, address: e.target.value })} /></div>
@@ -506,8 +522,18 @@ function Clients({ openClient }) {
             </div>
           </div>
           <div className="field"><label>Notes (keys, pets, access)</label><input value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })} /></div>
-          {error && <p className="small" style={{ color: 'var(--bad)', marginBottom: 10 }}>{error}</p>}
-          <button className="btn" onClick={addClient}>Save client</button>
+          <p className="small muted" style={{ marginBottom: 10 }}>An email or a phone number is needed. Email is only required if they want to sign in and manage their own cleans.</p>
+          {error && (
+            <div className="demo-banner" style={{ borderColor: 'var(--bad)', borderStyle: 'solid', color: 'var(--bad)', marginBottom: 10 }}>
+              <b>Not saved.</b> {error}
+            </div>
+          )}
+          <button className="btn" onClick={addClient} disabled={saving}>{saving ? 'Saving…' : 'Save client'}</button>
+        </div>
+      )}
+      {saved && (
+        <div className="demo-banner" style={{ borderColor: 'var(--good)', color: 'var(--good)', margin: '12px 0' }}>
+          ✓ {saved}
         </div>
       )}
       <div style={{ display: 'flex', gap: 14, alignItems: 'center', margin: '10px 0 16px', flexWrap: 'wrap' }}>
@@ -517,7 +543,7 @@ function Clients({ openClient }) {
       </div>
       <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
         <table className="tbl">
-          <thead><tr><th>Client</th><th>Type</th><th>Next visit</th><th>Bookings</th><th style={{ textAlign: 'right' }}>Lifetime value</th></tr></thead>
+          <thead><tr><th>Client</th><th>Type</th><th>Next visit</th><th>Bookings</th><th style={{ textAlign: 'right' }}>Lifetime value</th><th /></tr></thead>
           <tbody>
             {rows.filter(c => {
               const q = search.trim().toLowerCase();
@@ -530,6 +556,10 @@ function Clients({ openClient }) {
                 <td>{c.nextVisit ? c.nextVisit : <span className="muted">—</span>}</td>
                 <td>{c.totalBookings}</td>
                 <td style={{ textAlign: 'right' }}><b>{gbp(c.lifetimeValue)}</b></td>
+                <td style={{ textAlign: 'right', width: 40 }}>
+                  <button className="btn ghost small" style={{ padding: '2px 9px', color: 'var(--bad)' }}
+                    title={`Remove ${c.name}`} onClick={e => removeClient(e, c)}>×</button>
+                </td>
               </tr>
             ))}
           </tbody>

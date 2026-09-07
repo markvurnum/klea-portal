@@ -1,5 +1,18 @@
 # Klea — HANDOFF
 
+## 2026-09-07 — FIXED: "added a client and it didn't save"
+
+**Cause: email was mandatory on the client form.** A phone-only client (very common in domestic cleaning) was silently refused, and the rejection showed as small red text that is easy to miss. The activity trail confirmed it: no "added a client" event ever reached the server, while a direct API test created one first time, proving the server side was fine.
+
+Fixes:
+- **Email is now optional.** Name required, plus an email OR a phone number. Email is only needed if that client wants their own "My cleans" login.
+- All email comparisons made null-safe (`server/index.js` booking creation, portal lookup, applications), so a client with no email cannot break booking or the portal.
+- Rejections now show as a bordered red "Not saved" panel, successes show a green confirmation, and the button shows "Saving…".
+- **Added client delete** (`DELETE /api/admin/clients/:id`), refuses while they still have live bookings unless forced. There was previously no way to remove a client added by mistake.
+- Verified: phone-only client saves, name-only and contactless entries still rejected, booking and portal unaffected.
+
+**Guesty confirmed healthy and NOT needing new keys.** Syncing hourly with no errors, last sync 2026-09-07 12:03. 5 changeovers imported across the period, including a cancellation correctly applied on 09-05 and a replacement booking imported on 09-06. The rate limit cleared on its own after the back-off fix.
+
 ## 2026-09-02 — Invoices with paid/unpaid and overdue chasing
 
 For clients who come direct rather than booking online. `db.invoices`: `{ clientId, bookingId?, number, amount, issuedDate, dueDate, status, paidDate, file, notes }`.
