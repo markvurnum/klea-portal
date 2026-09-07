@@ -245,11 +245,54 @@ app.get('/api/admin/guesty/status', requireRole('admin', 'office'), (req, res) =
     lastError: db.settings.guestyLastError || null,
     autoSync: 'every hour',
     lookaheadDays: db.settings.guestyLookaheadDays || 180,
+    excludedCount: (db.settings.guestyExcludedListings || []).length,
     imported: imported.length,
     awaitingApproval: imported.filter(b => b.status === 'requested').length,
     sameDay: imported.filter(b => b.sameDayTurnaround && b.status !== 'cancelled').length,
     properties: db.clients.filter(c => c.guestyListingId).length
   });
+});
+
+// Every Guesty property with whether we sync it. Lets the office switch off a
+// property they do not actually clean, without needing a code change.
+app.get('/api/admin/guesty/listings', requireRole('admin', 'office'), async (req, res) => {
+  const db = getDb();
+  try {
+    const listings = await fetchListings();
+    const excluded = new Set(db.settings.guestyExcludedListings || []);
+    res.json(listings.map(l => ({
+      guestyId: l.guestyId, name: l.name, postcode: l.postcode, bedrooms: l.bedrooms,
+      synced: !excluded.has(l.guestyId)
+    })));
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/admin/guesty/listings/:guestyId', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const id = req.params.guestyId;
+  const set = new Set(db.settings.guestyExcludedListings || []);
+  const sync = !!req.body.synced;
+
+  if (sync) set.delete(id); else set.add(id);
+  db.settings.guestyExcludedListings = [...set];
+
+  // Switching a property off removes its imported work, since we are not doing it
+  let removed = 0;
+  if (!sync) {
+    const client = db.clients.find(c => c.guestyListingId === id);
+    if (client) {
+      const theirs = db.bookings.filter(b => b.clientId === client.id && b.source === 'guesty');
+      removed = theirs.length;
+      db.bookings = db.bookings.filter(b => !(b.clientId === client.id && b.source === 'guesty'));
+      const stillHasWork = db.bookings.some(b => b.clientId === client.id);
+      if (!stillHasWork) db.clients = db.clients.filter(c => c.id !== client.id);
+    }
+  }
+  logAction(sync ? 'switched a Guesty property on' : 'switched a Guesty property off', id, req);
+  save();
+  res.json({ synced: sync, removedChangeovers: removed });
 });
 
 app.post('/api/admin/guesty/sync', requireRole('admin', 'office'), async (req, res) => {

@@ -1625,6 +1625,8 @@ function Guesty({ user, openBooking }) {
         {msg && <p className="small" style={{ marginTop: 10, color: 'var(--ink)' }}>{msg}</p>}
       </div>
 
+      <GuestyProperties onChanged={load} />
+
       <h2 style={{ fontSize: 16, marginBottom: 10 }}>Changeovers</h2>
       {rows.length === 0 && <p className="muted">Nothing imported yet.</p>}
       {rows.length > 0 && (
@@ -1977,6 +1979,66 @@ function Invoices({ openClient }) {
         <p className="muted">{filter === 'chasing' ? 'Nothing overdue. All invoices are within their terms.' : 'Nothing here.'}</p>
       )}
       {shown.map(inv => <InvoiceRow key={inv.id} inv={inv} onChanged={load} showClient />)}
+    </>
+  );
+}
+
+
+// Which Guesty properties we actually clean. Switching one off removes its
+// changeovers and stops it importing.
+function GuestyProperties({ onChanged }) {
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const load = () => api.get('/api/admin/guesty/listings').then(setRows).catch(e => setErr(e.message));
+  useEffect(() => { load(); }, []);
+
+  const toggle = async l => {
+    if (l.synced && !window.confirm(
+      `Stop syncing ${l.name}?\n\nIts changeovers will be removed from the portal and no new ones will come in. You can switch it back on at any time.`
+    )) return;
+    setBusy(l.guestyId);
+    try {
+      const r = await api.post(`/api/admin/guesty/listings/${l.guestyId}`, { synced: !l.synced });
+      await load();
+      onChanged();
+      if (r.removedChangeovers) window.alert(`${l.name} switched off. ${r.removedChangeovers} changeover${r.removedChangeovers === 1 ? '' : 's'} removed.`);
+    } catch (e) { setErr(e.message); }
+    setBusy('');
+  };
+
+  if (err) return <p className="small muted" style={{ marginBottom: 16 }}>Could not load properties: {err}</p>;
+  if (!rows) return null;
+
+  return (
+    <>
+      <h2 style={{ fontSize: 16, margin: '0 0 6px' }}>Your properties</h2>
+      <p className="small muted" style={{ marginBottom: 10 }}>
+        Switch off any property you do not clean and it stops appearing here entirely.
+      </p>
+      <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 22 }}>
+        <table className="tbl">
+          <tbody>
+            {rows.map(l => (
+              <tr key={l.guestyId} style={{ cursor: 'default', opacity: l.synced ? 1 : 0.55 }}>
+                <td>
+                  <b>{l.name}</b>
+                  <div className="small muted">{l.postcode} · {l.bedrooms} bed</div>
+                </td>
+                <td style={{ textAlign: 'right' }}>
+                  {l.synced ? <span className="chip ok">Syncing</span> : <span className="chip">Not synced</span>}
+                </td>
+                <td style={{ textAlign: 'right', width: 130 }}>
+                  <button className={'btn small ' + (l.synced ? 'ghost' : 'gold')} disabled={busy === l.guestyId}
+                    onClick={() => toggle(l)}>
+                    {busy === l.guestyId ? '…' : l.synced ? 'Switch off' : 'Switch on'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

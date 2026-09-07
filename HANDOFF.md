@@ -1,5 +1,15 @@
 # Klea — HANDOFF
 
+## 2026-09-07 — Guesty properties can be switched off (Windermere excluded)
+
+Klea confirmed they do NOT clean the Windermere lodge (LA23, ~60 miles away), so it must not appear.
+- `settings.guestyExcludedListings` holds Guesty listing IDs to ignore. Import skips both the listing and its reservations.
+- **"Your properties" panel on the Guesty page** lists every Guesty property with a Switch off / Switch on button, so the office can change this without a code change.
+- Switching a property off also **removes its already-imported changeovers** and the property record, so it disappears immediately rather than lingering.
+- Verified offline (cannot hit Guesty while rate limited): 3 reservations across 2 properties → excluding one gives 1 imported, 2 skipped, and no property record for the excluded one.
+
+Also earlier today: import window widened 30 → 180 days (holiday lets book months out, Moorehouse and a November Lodge booking were being missed entirely), and Guesty "inquiry" reservations no longer create cleans (an enquiry is not a booking; one was due to come into range on 9 Oct).
+
 ## 2026-09-07 — FIXED: "added a client and it didn't save"
 
 **Cause: email was mandatory on the client form.** A phone-only client (very common in domestic cleaning) was silently refused, and the rejection showed as small red text that is easy to miss. The activity trail confirmed it: no "added a client" event ever reached the server, while a direct API test created one first time, proving the server side was fine.

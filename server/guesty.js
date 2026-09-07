@@ -163,8 +163,11 @@ export function normaliseReservation(r) {
 // before the live credentials exist.
 export function importReservations({ listings, reservations }) {
   const db = getDb();
-  const result = { created: [], skipped: 0, cancelled: 0, sameDay: 0, clientsAdded: 0 };
-  const listingById = new Map(listings.map(l => [l.guestyId, l]));
+  const result = { created: [], skipped: 0, cancelled: 0, sameDay: 0, clientsAdded: 0, excluded: 0 };
+
+  // Properties the office has switched off, e.g. one too far away to service
+  const excluded = new Set(db.settings?.guestyExcludedListings || []);
+  const listingById = new Map(listings.filter(l => !excluded.has(l.guestyId)).map(l => [l.guestyId, l]));
 
   // A listing with a check-in on the same date as a check-out is a tight turnaround
   const checkInDates = new Set(
@@ -174,6 +177,7 @@ export function importReservations({ listings, reservations }) {
 
   for (const r of reservations) {
     if (!r.checkOut || !r.listingId) { result.skipped++; continue; }
+    if (excluded.has(r.listingId)) { result.excluded++; continue; }
     const existing = db.bookings.find(b => b.guestyReservationId === r.guestyId);
 
     // Never guess at a reservation whose status did not come through
