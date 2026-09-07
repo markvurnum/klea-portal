@@ -362,7 +362,18 @@ app.post('/api/admin/start-fresh', requireRole('admin'), (req, res) => {
   });
   logAction('cleared all data for go-live', '', req);
   save();
-  res.json({ ok: true, keptLogins: keptUsers.length });
+
+  // The Guesty changeovers are real work, not demo data, so pull them straight
+  // back in rather than leaving a gap until the next hourly sync.
+  const resync = guestyConfigured();
+  if (resync) setTimeout(runGuestySync, 1000);
+
+  res.json({
+    ok: true,
+    keptLogins: keptUsers.length,
+    keptInventory: (db.inventory || []).length,
+    guestyResync: resync
+  });
 });
 
 // Generate strong passwords for every login. Returned ONCE, never stored in
@@ -1485,6 +1496,7 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 // ---------- Automatic Guesty sync ----------
+// (declared with function syntax so it is available to handlers defined above)
 // Changeovers must not depend on somebody remembering to press a button.
 let guestySyncing = false;
 async function runGuestySync() {
