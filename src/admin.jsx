@@ -1600,7 +1600,8 @@ function Guesty({ user, openBooking }) {
       <div className="card" style={{ marginBottom: 20 }}>
         <b>How it works</b>
         <p className="small muted" style={{ margin: '6px 0 10px' }}>
-          Every listing is included. Each changeover is booked for {status.changeover.start}, when the guest leaves, and must be finished by {status.changeover.end}, when the next guest arrives.
+          Every listing is included, looking <b>{status.lookaheadDays || 180} days ahead</b>. Each changeover is booked for {status.changeover.start}, when the guest leaves, and must be finished by {status.changeover.end}, when the next guest arrives.
+          Only genuine bookings come through: an enquiry that has not been accepted, or a cancelled stay, never creates a clean.
           Nothing goes on the rota by itself: every changeover lands as a request for you to approve, exactly like a website booking.
           Where a guest checks out and another checks in the same day, it is flagged as a same-day turnaround so you can see the tight ones at a glance.
           If a guest cancels in Guesty, the clean cancels here too.

@@ -16,6 +16,11 @@ import { proximityScore } from './geo.js';
 const TOKEN_URL = 'https://open-api.guesty.com/oauth2/token';
 const API = 'https://open-api.guesty.com/v1';
 
+// Guesty statuses. Only a genuinely booked stay should create a clean: an
+// "inquiry" is a guest asking, not a booking, and cleaning for one wastes a trip.
+export const LIVE_STATUSES = ['confirmed', 'reserved', 'checked_in', 'checked_out'];
+export const DEAD_STATUSES = ['canceled', 'cancelled', 'declined', 'expired', 'closed', 'inquiry'];
+
 export const CHANGEOVER_START = '10:00';
 export const CHANGEOVER_END = '15:00';
 const WINDOW_MINS = 5 * 60;
@@ -163,7 +168,7 @@ export function importReservations({ listings, reservations }) {
 
   // A listing with a check-in on the same date as a check-out is a tight turnaround
   const checkInDates = new Set(
-    reservations.filter(r => r.status !== 'canceled' && r.status !== 'cancelled')
+    reservations.filter(r => LIVE_STATUSES.includes(r.status))
       .map(r => `${r.listingId}|${r.checkIn}`)
   );
 
@@ -178,8 +183,21 @@ export function importReservations({ listings, reservations }) {
       continue;
     }
 
-    // A cancelled stay cancels the clean
-    if (r.status === 'canceled' || r.status === 'cancelled') {
+    const isLive = LIVE_STATUSES.includes(r.status);
+    const isDead = DEAD_STATUSES.includes(r.status);
+
+    // An unrecognised status is reported rather than guessed at, so a new Guesty
+    // status can never silently create or destroy a clean
+    if (!isLive && !isDead) {
+      result.skipped++;
+      (result.unknownStatuses = result.unknownStatuses || {})[r.status] =
+        (result.unknownStatuses[r.status] || 0) + 1;
+      continue;
+    }
+
+    // Anything not actually booked (cancelled, declined, expired, or a mere
+    // inquiry) must not have a clean against it
+    if (isDead) {
       if (existing && existing.status !== 'cancelled') {
         existing.status = 'cancelled';
         existing.cancellationFee = 0;

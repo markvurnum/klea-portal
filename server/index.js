@@ -244,6 +244,7 @@ app.get('/api/admin/guesty/status', requireRole('admin', 'office'), (req, res) =
     lastSync: db.settings.guestyLastSync || null,
     lastError: db.settings.guestyLastError || null,
     autoSync: 'every hour',
+    lookaheadDays: db.settings.guestyLookaheadDays || 180,
     imported: imported.length,
     awaitingApproval: imported.filter(b => b.status === 'requested').length,
     sameDay: imported.filter(b => b.sameDayTurnaround && b.status !== 'cancelled').length,
@@ -254,9 +255,9 @@ app.get('/api/admin/guesty/status', requireRole('admin', 'office'), (req, res) =
 app.post('/api/admin/guesty/sync', requireRole('admin', 'office'), async (req, res) => {
   const db = getDb();
   try {
-    const today = new Date();
-    const from = today.toISOString().slice(0, 10);
-    const to = new Date(today.getTime() + 30 * 864e5).toISOString().slice(0, 10);
+    const days = db.settings.guestyLookaheadDays || 180;
+    const from = new Date().toISOString().slice(0, 10);
+    const to = new Date(Date.now() + days * 864e5).toISOString().slice(0, 10);
     const [listings, reservations] = await Promise.all([fetchListings(), fetchReservations({ from, to })]);
     const result = importReservations({ listings, reservations });
     db.settings.guestyLastSync = new Date().toISOString();
@@ -1491,8 +1492,9 @@ async function runGuestySync() {
   guestySyncing = true;
   try {
     const db = getDb();
+    const days = db.settings.guestyLookaheadDays || 180;
     const today = new Date().toISOString().slice(0, 10);
-    const to = new Date(Date.now() + 30 * 864e5).toISOString().slice(0, 10);
+    const to = new Date(Date.now() + days * 864e5).toISOString().slice(0, 10);
     const [listings, reservations] = await Promise.all([fetchListings(), fetchReservations({ from: today, to })]);
     const result = importReservations({ listings, reservations });
     db.settings.guestyLastSync = new Date().toISOString();
