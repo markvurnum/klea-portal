@@ -79,9 +79,17 @@ git commit -m "what you changed"
 git push
 ```
 
-That is the whole deployment. Railway takes the new code from GitHub and puts it
-live within a couple of minutes. Then **check the live site** at
-https://portal.kleahome.co.uk rather than assuming it worked.
+Then it needs putting live. There are two ways, depending on how the hosting
+has been set up:
+
+**If GitHub deployment is connected (recommended):** pushing is all you do.
+Railway sees the new code and puts it live within a couple of minutes.
+
+**If not:** whoever holds the Railway access runs `npx @railway/cli up` from
+this folder.
+
+Either way, **check the live site** at https://portal.kleahome.co.uk afterwards
+rather than assuming it worked.
 
 ---
 
