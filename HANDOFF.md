@@ -1,5 +1,25 @@
 # Klea — HANDOFF
 
+## 2026-09-09 — Handover pack done: GitHub auto-deploy live, SETUP.md ready
+
+**The whole point:** someone other than us can now run the portal without a Railway login, without keys pasted anywhere, and without asking us how anything works.
+
+**GitHub → Railway auto-deploy is connected and proven.**
+- Railway's GitHub App now has access to `markvurnum/klea-portal` (it did not before, which is why the repo was missing from Railway's picker).
+- Service `klea-demo` is connected to the repo, branch `main`, "Auto deploys when pushed to GitHub" enabled.
+- **Proven end to end:** pushed commit `7490b1d`, Railway started building 8 seconds later "via GitHub", finished, went ACTIVE, "Deployment successful". No button pressed.
+- **No downtime:** polled the live site every 20s straight through the deploy, 14 consecutive HTTP 200s.
+- **Nothing lost:** volume intact after the rebuild — staff 6, clients 9, bookings 64, users 10, sessions 53, payments 63, activity 55. Guesty token still cached (so no rate-limited sign-in burned), `guestyExcludedListings` still holds Windermere, hourly sync ran at 14:39 with `lastError: null`.
+- Live checks: homepage 200, `/api/catalogue` returning real prices, `/api/auth/login` returning 401 as it should.
+
+**Two handover documents, both in the repo:**
+- `CLAUDE.md` — rewritten as a self-contained brief. Claude Code reads it automatically, so a new person gets the business rules, the roles, the Guesty traps and the golden rule without being told.
+- `SETUP.md` — fresh-machine guide: install, clone, `npm run keys` for the Guesty credentials via the local form, `npm run dev`, make a change, push. Now states plainly that **pushing to `main` is the whole deployment**, because that is finally true.
+
+**Worth knowing:** switching the Windermere lodge off removed nearly all the Guesty changeovers. There is exactly **one** genuine Guesty booking in the 180-day window now (2027-01-02, Moorehouse, awaiting office approval). That is correct behaviour given Klea's rules (Windermere excluded, enquiries are not bookings), but it does mean Windermere was the bulk of their Guesty volume. Flagging it in case that is a surprise.
+
+**NEXT STEP:** nothing outstanding on the handover itself. The remaining pre-launch work is unchanged: Stripe for real card payments, a real email/SMS provider, automatic backups of the live database, GDPR paperwork, then loading real staff and clients and regenerating everyone's password.
+
 ## 2026-09-07 — Guesty properties can be switched off (Windermere excluded)
 
 Klea confirmed they do NOT clean the Windermere lodge (LA23, ~60 miles away), so it must not appear.
