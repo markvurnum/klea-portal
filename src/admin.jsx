@@ -1422,16 +1422,17 @@ function Activity() {
           </button>
           <button className="btn ghost small" style={{ color: 'var(--bad)', borderColor: 'var(--bad)' }}
             onClick={async () => {
-              const ok = window.prompt('This clears every demo client, booking and Kleaner so you can start trading for real. Your logins and price list are kept.\n\nType START FRESH to confirm:');
+              const ok = window.prompt('This clears every demo client, booking and Kleaner so you can start trading for real. Your logins, price list and Guesty connection are kept.\n\nType START FRESH to confirm:');
               if (ok !== 'START FRESH') return;
-              try { await api.post('/api/admin/start-fresh', { confirm: 'START FRESH' }); window.location.reload(); }
+              const withExamples = window.confirm('Leave one example on each screen to show you what a record looks like?\n\nOK  = leave one example each, clearly labelled, delete them as you go\nCancel = completely empty');
+              try { await api.post('/api/admin/start-fresh', { confirm: 'START FRESH', withExamples }); window.location.reload(); }
               catch (e) { window.alert(e.message); }
             }}>
             Clear everything and go live
           </button>
         </div>
         <p className="small muted" style={{ marginTop: 8, marginBottom: 0 }}>
-          Use "Clear everything" once, on the day you start trading for real. It empties the demo people and jobs, ready for your own.
+          Use "Clear everything" once, on the day you start trading for real. It empties the demo people and jobs, ready for your own, and offers to leave one labelled example on each screen so no page is a blank sheet. Your real Guesty changeovers come straight back in.
         </p>
       </div>
       {rows.length === 0 && <p className="muted">Nothing recorded yet.</p>}

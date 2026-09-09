@@ -549,8 +549,67 @@ app.delete('/api/admin/absences/:id', requireRole('admin', 'office'), (req, res)
   res.json({ ok: true });
 });
 
+// One of each, clearly labelled, so every screen shows the shape of a real
+// record instead of an empty page. Deleting them is the office's first job.
+function exampleRecords(db) {
+  const day = n => new Date(Date.now() + n * 864e5).toISOString().slice(0, 10);
+  const EX = 'EXAMPLE, delete this once you have added your own.';
+
+  const staff = {
+    id: 1, name: 'Example Kleaner', phone: '07700 900000', postcode: 'FY1 1AA',
+    colour: '#D8BFA3', days: [1, 2, 3, 4, 5], start: '09:00', end: '15:00',
+    active: true, photo: '', bio: EX, rate: 12.5,
+    email: '', address: '', dob: '', niNumber: '', emergencyContact: '', bank: '',
+    legal: { dbs: {}, rightToWork: {}, contract: {}, training: {} }
+  };
+
+  const client = {
+    id: 1, name: 'Example Client', email: '', phone: '07700 900001',
+    postcode: 'FY1 1AA', address: '1 Example Street, Blackpool',
+    type: 'residential', notes: EX
+  };
+
+  const checklist = [];
+  let ci = 0;
+  for (const sec of checklistFor('house-regular')) {
+    for (const item of sec.items) checklist.push({ id: ++ci, section: sec.section, label: item, done: false });
+  }
+
+  const booking = {
+    id: 1, clientId: 1, serviceId: 'house-regular', size: 2, addonIds: [], addonQty: {},
+    frequency: 'once', seriesId: null, date: day(3), start: '10:00', durationMins: 120,
+    staffId: 1, status: 'booked', price: 0, teamClean: false, photos: [], rating: null,
+    notes: EX, checklist, createdAt: new Date().toISOString()
+  };
+
+  return {
+    staff: [staff],
+    clients: [client],
+    bookings: [booking],
+    invoices: [{
+      id: 1, clientId: 1, bookingId: null, number: 'EXAMPLE-001', amount: 0,
+      issuedDate: day(0), dueDate: day(14), status: 'unpaid', paidDate: null,
+      file: null, notes: EX
+    }],
+    messages: [{
+      id: 1, clientId: 1, bookingId: 1, channel: 'sms', direction: 'out',
+      body: EX, createdAt: new Date().toISOString()
+    }],
+    expenses: [{ id: 1, date: day(0), category: 'other', description: EX, amount: 0 }],
+    applications: [{
+      id: 1, name: 'Example Applicant', email: '', phone: '07700 900002',
+      postcode: 'FY1 1AA', transport: '', days: [], hours: '', experience: '',
+      rightToWork: '', dbs: '', about: EX, status: 'new', appliedAt: new Date().toISOString()
+    }],
+    absences: [{ id: 1, staffId: 1, from: day(30), to: day(31), reason: EX }],
+    inventory: [{ id: 1, name: 'Example item, delete once you have added your own', unitCost: 0, stock: 0, reorderAt: 0 }]
+  };
+}
+
 // Empty the system ready for real trading: removes every demo client, booking,
 // payment, message and Kleaner, but keeps logins, settings and the price list.
+// Pass withExamples to leave one labelled example on each screen instead of
+// handing over a set of blank pages.
 app.post('/api/admin/start-fresh', requireRole('admin'), (req, res) => {
   if (req.body.confirm !== 'START FRESH') {
     return res.status(400).json({ error: 'Type START FRESH to confirm. This cannot be undone.' });
@@ -558,12 +617,14 @@ app.post('/api/admin/start-fresh', requireRole('admin'), (req, res) => {
   const db = getDb();
   const keptSettings = db.settings;
   const keptUsers = (db.users || []).filter(u => u.role !== 'kleaner');
+  const ex = req.body.withExamples ? exampleRecords(db) : {};
   Object.assign(db, {
     staff: [], clients: [], bookings: [], messages: [], payments: [], payouts: [],
     applications: [], timesheets: [], absences: [], expenses: [], invoices: [],
-    users: keptUsers, settings: keptSettings, activity: []
+    users: keptUsers, settings: keptSettings, activity: [],
+    ...ex
   });
-  logAction('cleared all data for go-live', '', req);
+  logAction(req.body.withExamples ? 'cleared all data, left one example on each screen' : 'cleared all data for go-live', '', req);
   save();
 
   // The Guesty changeovers are real work, not demo data, so pull them straight
@@ -575,6 +636,7 @@ app.post('/api/admin/start-fresh', requireRole('admin'), (req, res) => {
     ok: true,
     keptLogins: keptUsers.length,
     keptInventory: (db.inventory || []).length,
+    examples: !!req.body.withExamples,
     guestyResync: resync
   });
 });
