@@ -379,7 +379,9 @@ app.get('/api/admin/guesty/webhook', requireRole('admin', 'office'), (req, res) 
   const db = getDb();
   res.json({
     url: webhookUrl(req),
-    connected: !!db.settings.guestyWebhookId,
+    // Only "on" when we can actually accept a delivery. A subscription without a
+    // signing key refuses everything, which must never look like working.
+    connected: !!(db.settings.guestyWebhookId && db.settings.guestyWebhookSecret),
     events: WEBHOOK_EVENTS,
     hasSecret: !!db.settings.guestyWebhookSecret,   // never returns the secret itself
     lastReceived: db.settings.guestyWebhookLastAt || null,
@@ -393,23 +395,43 @@ app.post('/api/admin/guesty/webhook', requireRole('admin'), async (req, res) => 
   if (!url.startsWith('https://')) {
     return res.status(400).json({ error: 'Guesty only sends to an https address, so this cannot be set up from a local machine.' });
   }
+  let createdNow = null;
   try {
-    // One subscription per address: duplicates make Guesty miss notifications
+    // One subscription per address: duplicates make Guesty miss notifications.
+    // An existing one is REUSED rather than replaced, because deleting and
+    // recreating issues a new signing key for no reason. This also means
+    // pressing the button again repairs a half-finished setup.
     const existing = (await listWebhooks()).filter(w => w.url === url);
-    for (const w of existing) await deleteWebhook(w._id || w.id);
+    const usable = existing.find(w => WEBHOOK_EVENTS.every(e => (w.events || []).includes(e)));
 
-    const created = await createWebhook(url, WEBHOOK_EVENTS);
-    db.settings.guestyWebhookId = created._id || created.id || null;
+    let id;
+    if (usable && existing.length === 1) {
+      id = usable._id || usable.id;
+    } else {
+      for (const w of existing) await deleteWebhook(w._id || w.id);
+      const created = await createWebhook(url, WEBHOOK_EVENTS);
+      createdNow = created._id || created.id || null;
+      id = createdNow;
+    }
+
+    // Without a signing key every delivery is refused, and Guesty disables the
+    // endpoint after five days of that, so a subscription is never left in
+    // place without one.
+    let secret;
+    try {
+      secret = await fetchWebhookSecret(url);
+    } catch (e) {
+      if (createdNow) await deleteWebhook(createdNow).catch(() => {});
+      throw new Error(`${e.message} Nothing was left switched on, so try again in a minute.`);
+    }
+
+    db.settings.guestyWebhookId = id;
     db.settings.guestyWebhookUrl = url;
-    // Recreating a subscription issues a new signing key, so always re-read it
-    db.settings.guestyWebhookSecret = await fetchWebhookSecret(url);
+    db.settings.guestyWebhookSecret = secret;
     db.settings.guestyWebhookLastError = null;
     logAction('turned on Guesty instant updates', url, req);
     save();
-    if (!db.settings.guestyWebhookSecret) {
-      return res.status(502).json({ error: 'Guesty accepted the subscription but did not return a signing key. Deliveries will be refused until it does.' });
-    }
-    res.json({ ok: true, url, events: WEBHOOK_EVENTS, replaced: existing.length });
+    res.json({ ok: true, url, events: WEBHOOK_EVENTS, reused: !createdNow, replaced: createdNow ? existing.length : 0 });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }

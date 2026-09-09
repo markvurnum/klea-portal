@@ -144,9 +144,26 @@ export async function deleteWebhook(id) {
 
 // Each endpoint gets its own signing key. Deleting and recreating a subscription
 // for the same URL issues a NEW secret, so always re-read it after registering.
-export async function fetchWebhookSecret(url) {
-  const data = await guestyGet('/webhooks-v2/secret', { url });
-  return data.secret || data.key || data.signingSecret || null;
+//
+// The key is not available the instant the subscription is created: Guesty
+// answers 404 for a short while first. Without the key every delivery is
+// refused, and five days of refusals gets the endpoint disabled for good, so
+// this waits rather than giving up on the first try.
+export async function fetchWebhookSecret(url, { attempts = 6 } = {}) {
+  let lastError = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const data = await guestyGet('/webhooks-v2/secret', { url });
+      const key = data.key || data.secret || data.signingSecret || null;
+      if (key) return key;
+      lastError = new Error('Guesty returned no key.');
+    } catch (e) {
+      lastError = e;
+      if (!/\(404\)/.test(e.message)) throw e;   // a real failure, not "not ready yet"
+    }
+    await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+  }
+  throw new Error(`Guesty did not hand over a signing key. ${lastError?.message || ''}`.trim());
 }
 
 // Guesty signs deliveries using Svix's scheme: HMAC-SHA256 over
