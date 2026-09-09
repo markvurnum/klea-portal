@@ -1,5 +1,24 @@
 # Klea — HANDOFF
 
+## 2026-09-09 — Guesty instant updates (webhooks), and the client-save fix proven on production
+
+**Client-save complaint: closed.** Verified two ways rather than trusting the earlier fix.
+- Ran a scratch copy of the LIVE container's own code against a COPY of the live database. Six cases, all correct: phone-only saves (the exact reported case), email-only saves, both saves, no-contact refused, duplicate email refused, no name refused. Rows came back from the server, opened, edited, and persisted to disk. Live database untouched throughout, 9 clients before and after, scratch copy deleted.
+- Drove the real form in a browser: phone-only client saved with a green confirmation and appeared in search; the no-contact case showed a bordered red "Not saved" panel keeping everything typed.
+
+**Guesty now supports instant updates.** Previously a booking made at 10:05 waited until 11:00.
+- `POST /api/guesty/webhook` — public by necessity, every delivery must carry a valid Guesty (Svix) signature. Raw body kept by an `express.json` verify hook, since the signature covers the unparsed bytes.
+- Admin turns it on from the Guesty page: registers the subscription with Guesty, reads back the signing key, and shows the last update received. Off by default.
+- Subscribes to `reservation.created.v2` and `reservation.updated.v2`. There is no cancel event: a cancellation arrives as an update with `subType: CANCELED`, so status is read from the payload rather than the event name.
+- **The hourly sync deliberately stays on** as a safety net. Guesty auto-disables an endpoint after five days of failures and only their support can re-enable it.
+- All existing rules still hold on the webhook path: enquiries never create a clean, switched-off properties (Windermere) are ignored, cancellations cancel here, everything lands as a request for the office.
+- **Same-day turnarounds now work across separate deliveries.** A single webhook only describes its own stay, so stays are remembered in `db.guestyStays` and the flag is recomputed across every upcoming Guesty clean. Previously only detectable within one polled batch.
+- `normaliseReservation` now prefers the property's own calendar date (`checkOutDateLocalized`) over the UTC timestamp.
+
+**Tested:** 26 webhook cases pass, including four security cases (no signature, forged signature, replayed old delivery, body altered in transit are all refused), duplicate delivery ignored, enquiry creates nothing, cancellation cancels, guest extension moves the clean, same-day flag appearing across two deliveries, switched-off property ignored. 14 regression cases pass on the hourly-poll path, so nothing existing changed behaviour. Built clean, checked at 375px with no horizontal scroll.
+
+**NEXT STEP:** the code is live but instant updates are **not switched on yet**, because registering the subscription writes to Klea's real Guesty account. Waiting on Mark's go-ahead, then press "Turn on instant updates" on the Guesty page and confirm with a real booking.
+
 ## 2026-09-09 — Handover pack done: GitHub auto-deploy live, SETUP.md ready
 
 **The whole point:** someone other than us can now run the portal without a Railway login, without keys pasted anywhere, and without asking us how anything works.

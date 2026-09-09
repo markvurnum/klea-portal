@@ -1553,12 +1553,16 @@ function Guesty({ user, openBooking }) {
   const [rows, setRows] = useState([]);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
+  const [hookMsg, setHookMsg] = useState('');
+  const [hook, setHook] = useState(null);
 
   const load = () => Promise.all([
     api.get('/api/admin/guesty/status'),
-    api.get('/api/admin/bookings')
-  ]).then(([s, b]) => {
+    api.get('/api/admin/bookings'),
+    api.get('/api/admin/guesty/webhook').catch(() => null)
+  ]).then(([s, b, w]) => {
     setStatus(s);
+    setHook(w);
     setRows(b.filter(x => x.source === 'guesty' && x.status !== 'cancelled')
       .sort((p, q) => (p.date + p.start).localeCompare(q.date + q.start)));
   });
@@ -1572,6 +1576,16 @@ function Guesty({ user, openBooking }) {
       setMsg(`${label}: ${r.created} changeover${r.created === 1 ? '' : 's'} imported, ${r.skipped} already up to date${r.cancelled ? `, ${r.cancelled} cancelled` : ''}.`);
       await load();
     } catch (e) { setMsg(e.message); }
+    setBusy(false);
+  };
+
+  const runHook = async (verb, label) => {
+    setBusy(true); setHookMsg('');
+    try {
+      await (verb === 'post' ? api.post('/api/admin/guesty/webhook') : api.del('/api/admin/guesty/webhook'));
+      setHookMsg(label);
+      await load();
+    } catch (e) { setHookMsg(e.message); }
     setBusy(false);
   };
 
@@ -1623,6 +1637,60 @@ function Guesty({ user, openBooking }) {
           </p>
         )}
         {msg && <p className="small" style={{ marginTop: 10, color: 'var(--ink)' }}>{msg}</p>}
+      </div>
+
+      <div className="card" style={{ marginBottom: 20 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <b>Instant updates</b>
+          <span className="chip" style={hook?.connected
+            ? { background: 'var(--good)', color: '#fff' }
+            : { background: 'var(--line)', color: 'var(--muted)' }}>
+            {hook?.connected ? 'On' : 'Off'}
+          </span>
+        </div>
+        <p className="small muted" style={{ margin: '6px 0 10px' }}>
+          {hook?.connected
+            ? 'Guesty tells us the moment a booking is made, changed or cancelled, so a changeover appears here within seconds instead of waiting for the hourly check. The hourly check still runs underneath as a safety net.'
+            : 'At the moment we ask Guesty for new bookings once an hour, so a booking made at five past ten will not appear until eleven. Switch this on and Guesty tells us the moment it happens instead.'}
+        </p>
+
+        {hook?.connected && (
+          <p className="small muted" style={{ margin: '0 0 10px' }}>
+            {hook.lastReceived
+              ? <>Last update from Guesty: <b>{new Date(hook.lastReceived).toLocaleString('en-GB')}</b></>
+              : <>Switched on and waiting for the first update. Nothing arrives until a guest books or changes something.</>}
+          </p>
+        )}
+
+        {hook?.lastError && (
+          <div className="demo-banner" style={{ borderColor: 'var(--bad)', borderStyle: 'solid', color: 'var(--bad)', marginBottom: 10 }}>
+            <b>Guesty updates are being refused.</b> {hook.lastError.message} Switch it off and on again to fix it. If this is left for five days Guesty stops sending altogether and only they can switch it back on.
+          </div>
+        )}
+
+        {user.role === 'admin' ? (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            {!hook?.connected && (
+              <button className="btn gold small" disabled={busy || !status.connected} onClick={() => runHook('post', 'Instant updates are on.')}>
+                {busy ? 'Working…' : 'Turn on instant updates'}
+              </button>
+            )}
+            {hook?.connected && (
+              <button className="btn ghost small" disabled={busy} onClick={() => runHook('del', 'Instant updates are off. The hourly check still runs.')}>
+                Turn off
+              </button>
+            )}
+            {hook?.url && <span className="small muted">Guesty sends to {hook.url}</span>}
+          </div>
+        ) : (
+          <p className="small muted">Ask the account admin to switch this on.</p>
+        )}
+        {!status.connected && !hook?.connected && (
+          <p className="small" style={{ color: 'var(--warn)', marginTop: 10 }}>
+            Needs the Guesty credentials installed first.
+          </p>
+        )}
+        {hookMsg && <p className="small" style={{ marginTop: 10 }}>{hookMsg}</p>}
       </div>
 
       <GuestyProperties onChanged={load} />

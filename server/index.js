@@ -5,7 +5,13 @@ import { loadDb, getDb, save, nextId } from './db.js';
 import { seed } from './seed.js';
 import { SERVICES, ADDONS, FREQUENCIES, FAQS, quote, checklistFor } from './catalogue.js';
 import { proximityScore, proximityLabel, outcode } from './geo.js';
-import { isConfigured as guestyConfigured, fetchListings, fetchReservations, importReservations, CHANGEOVER_START, CHANGEOVER_END } from './guesty.js';
+import {
+  isConfigured as guestyConfigured, fetchListings, fetchReservations, importReservations,
+  CHANGEOVER_START, CHANGEOVER_END,
+  WEBHOOK_EVENTS, listWebhooks, createWebhook, deleteWebhook, fetchWebhookSecret,
+  verifyWebhookSignature, alreadySeen, normaliseWebhookReservation,
+  cacheListings, cachedListings
+} from './guesty.js';
 import crypto from 'crypto';
 import { attachUser, requireRole, requireSelfOrOffice, verifyPassword, hashPassword, issueToken, logAction, seedUsers } from './auth.js';
 
@@ -17,7 +23,15 @@ app.set('trust proxy', true);
 // Keep the portal out of search results
 app.use((req, res, next) => { res.set('X-Robots-Tag', 'noindex, nofollow'); next(); });
 
-app.use(express.json({ limit: '10mb' })); // photo uploads arrive as data URLs
+// Photo uploads arrive as data URLs, hence the generous limit. The Guesty
+// webhook signature is computed over the raw bytes, so those are kept aside
+// before the body is parsed.
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    if (req.url.startsWith('/api/guesty/webhook')) req.rawBody = buf.toString('utf8');
+  }
+}));
 app.use(attachUser);
 
 loadDb(seed);
@@ -295,6 +309,129 @@ app.post('/api/admin/guesty/listings/:guestyId', requireRole('admin', 'office'),
   res.json({ synced: sync, removedChangeovers: removed });
 });
 
+// ---------- Instant updates from Guesty (webhooks) ----------
+// Guesty posts here the moment a reservation is made or changed, so a changeover
+// appears in the portal in seconds instead of waiting for the hourly sync.
+// Public by necessity, but every delivery must carry a valid Guesty signature.
+app.post('/api/guesty/webhook', async (req, res) => {
+  const db = getDb();
+  const check = verifyWebhookSignature(req.rawBody || '', req.headers, db.settings.guestyWebhookSecret);
+  if (!check.ok) {
+    // Surfaced on the Guesty page: Guesty gives up after five days of failures
+    // and only their support can switch the endpoint back on, so a signature
+    // problem needs to be visible long before then.
+    db.settings.guestyWebhookLastError = { message: check.reason, at: new Date().toISOString() };
+    save();
+    return res.status(401).json({ error: 'Signature check failed.' });
+  }
+
+  // Guesty warns that duplicates and out-of-order deliveries are normal
+  if (alreadySeen(check.id)) return res.json({ ok: true, duplicate: true });
+
+  const event = req.body?.event || '';
+  db.settings.guestyWebhookLastAt = new Date().toISOString();
+  db.settings.guestyWebhookLastError = null;
+
+  if (!event.startsWith('reservation.')) {
+    save();
+    return res.json({ ok: true, ignored: event });
+  }
+
+  try {
+    const r = normaliseWebhookReservation(req.body);
+    if (!r.guestyId || !r.listingId) {
+      save();
+      return res.json({ ok: true, ignored: 'incomplete payload' });
+    }
+
+    // A property we have never seen before: refresh the property list once
+    // rather than dropping the booking on the floor.
+    if (!cachedListings().some(l => l.guestyId === r.listingId)) {
+      try { cacheListings(await fetchListings()); }
+      catch (e) { console.error('Guesty listing refresh failed:', e.message); }
+    }
+
+    const result = importReservations({ listings: cachedListings(), reservations: [r] });
+    const what = result.created.length ? `${result.created.length} changeover`
+      : result.cancelled ? 'a cancellation'
+      : result.excluded ? 'a switched-off property'
+      : 'no change';
+    logAction('Guesty instant update', `${event}: ${what}`, null);
+    save();
+    res.json({ ok: true, created: result.created.length, cancelled: result.cancelled });
+  } catch (e) {
+    // A non-2xx tells Guesty to retry, which is what we want for a transient fault
+    console.error('Guesty webhook failed:', e.message);
+    db.settings.guestyWebhookLastError = { message: e.message, at: new Date().toISOString() };
+    save();
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function webhookUrl(req) {
+  const configured = getDb().settings.guestyWebhookUrl;
+  if (configured) return configured;
+  const host = req.get('x-forwarded-host') || req.get('host');
+  return `https://${host}/api/guesty/webhook`;
+}
+
+app.get('/api/admin/guesty/webhook', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  res.json({
+    url: webhookUrl(req),
+    connected: !!db.settings.guestyWebhookId,
+    events: WEBHOOK_EVENTS,
+    hasSecret: !!db.settings.guestyWebhookSecret,   // never returns the secret itself
+    lastReceived: db.settings.guestyWebhookLastAt || null,
+    lastError: db.settings.guestyWebhookLastError || null
+  });
+});
+
+app.post('/api/admin/guesty/webhook', requireRole('admin'), async (req, res) => {
+  const db = getDb();
+  const url = webhookUrl(req);
+  if (!url.startsWith('https://')) {
+    return res.status(400).json({ error: 'Guesty only sends to an https address, so this cannot be set up from a local machine.' });
+  }
+  try {
+    // One subscription per address: duplicates make Guesty miss notifications
+    const existing = (await listWebhooks()).filter(w => w.url === url);
+    for (const w of existing) await deleteWebhook(w._id || w.id);
+
+    const created = await createWebhook(url, WEBHOOK_EVENTS);
+    db.settings.guestyWebhookId = created._id || created.id || null;
+    db.settings.guestyWebhookUrl = url;
+    // Recreating a subscription issues a new signing key, so always re-read it
+    db.settings.guestyWebhookSecret = await fetchWebhookSecret(url);
+    db.settings.guestyWebhookLastError = null;
+    logAction('turned on Guesty instant updates', url, req);
+    save();
+    if (!db.settings.guestyWebhookSecret) {
+      return res.status(502).json({ error: 'Guesty accepted the subscription but did not return a signing key. Deliveries will be refused until it does.' });
+    }
+    res.json({ ok: true, url, events: WEBHOOK_EVENTS, replaced: existing.length });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.delete('/api/admin/guesty/webhook', requireRole('admin'), async (req, res) => {
+  const db = getDb();
+  try {
+    const url = webhookUrl(req);
+    for (const w of (await listWebhooks()).filter(x => x.url === url)) {
+      await deleteWebhook(w._id || w.id);
+    }
+    db.settings.guestyWebhookId = null;
+    db.settings.guestyWebhookSecret = null;
+    logAction('turned off Guesty instant updates', url, req);
+    save();
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 app.post('/api/admin/guesty/sync', requireRole('admin', 'office'), async (req, res) => {
   const db = getDb();
   try {
@@ -302,6 +439,7 @@ app.post('/api/admin/guesty/sync', requireRole('admin', 'office'), async (req, r
     const from = new Date().toISOString().slice(0, 10);
     const to = new Date(Date.now() + days * 864e5).toISOString().slice(0, 10);
     const [listings, reservations] = await Promise.all([fetchListings(), fetchReservations({ from, to })]);
+    cacheListings(listings);   // so an instant update can stand on its own
     const result = importReservations({ listings, reservations });
     db.settings.guestyLastSync = new Date().toISOString();
     logAction('synced Guesty', `${result.created.length} changeover(s) imported`, req);
@@ -1551,6 +1689,7 @@ async function runGuestySync() {
     const today = new Date().toISOString().slice(0, 10);
     const to = new Date(Date.now() + days * 864e5).toISOString().slice(0, 10);
     const [listings, reservations] = await Promise.all([fetchListings(), fetchReservations({ from: today, to })]);
+    cacheListings(listings);   // so an instant update can stand on its own
     const result = importReservations({ listings, reservations });
     db.settings.guestyLastSync = new Date().toISOString();
     db.settings.guestyLastError = null;

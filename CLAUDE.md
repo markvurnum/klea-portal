@@ -121,7 +121,9 @@ bathroom, living room, kitchen, then deep clean extras, then finish.
 - Only genuine bookings import. A Guesty "inquiry" is somebody asking, not
   booking, and must never create a clean
 - Cancelled in Guesty means cancelled here
-- Syncs by itself every hour
+- Syncs by itself every hour, and **instant updates** (webhooks) can be switched
+  on so Guesty pushes each booking the moment it happens. The hourly sync stays
+  on underneath as a safety net, deliberately
 
 **Time off** blocks work properly. Anyone on holiday or off sick is excluded
 from the availability engine and from Guesty assignment, not just greyed out.
@@ -140,6 +142,28 @@ Their API has three traps, all already handled. Do not undo them:
    and saved to the database so restarts do not burn a fresh one. If you get a
    429, wait. Retrying quickly makes it worse and has previously locked things
    out for over an hour.
+
+**Instant updates (webhooks), further traps:**
+
+4. **Subscriptions can only be created through the API**, never the Guesty
+   dashboard. `POST /webhooks` with `{url, events}`. The dashboard only shows
+   deliveries and replays failed ones.
+5. **There is no cancellation event.** A cancellation arrives as
+   `reservation.updated.v2` with `meta.subType: "CANCELED"`. Read the `status`
+   field, not the event name.
+6. **The v2 payload renames things**: `reservationId` not `_id`, `unitId` not
+   `listingId`. It carries no guest name and no money, deliberately.
+7. **Deliveries are signed** using Svix's scheme, HMAC-SHA256 over
+   `{svix-id}.{svix-timestamp}.{raw body}`. The body must be hashed **before**
+   JSON parsing, which is why `express.json` has a `verify` hook keeping the raw
+   bytes for that one route.
+8. **Duplicates and out-of-order deliveries are normal**, so every delivery id is
+   remembered and repeats are ignored.
+9. **Five days of failures and Guesty disables the endpoint**, after which only
+   Guesty support can switch it back on. A signature failure is therefore shown
+   prominently on the Guesty page rather than logged quietly.
+10. **Recreating a subscription for the same URL issues a new signing key**, so
+    the secret is always re-read after registering.
 
 Credentials live in environment variables, never in the code:
 `GUESTY_CLIENT_ID` and `GUESTY_CLIENT_SECRET`.
