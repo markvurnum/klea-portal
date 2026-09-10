@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { api } from './api.js';
 import { Logo, ThemeToggle, Avatar, gbp, niceDate } from './ui.jsx';
 
-// Client portal: look up your cleans by email (demo: no password),
+// Client portal: look up your cleans by email, no password needed,
 // then reschedule or cancel under the policy, see photos, rate cleans.
 export default function Portal() {
   const [email, setEmail] = useState(() => localStorage.getItem('klea-portal-email') || '');

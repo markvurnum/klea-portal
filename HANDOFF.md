@@ -1,5 +1,37 @@
 # Klea — HANDOFF
 
+## 2026-09-10 — Where the client puts their keys, and the pre-handover checklist
+
+**All three outside services are set up in one place: Connections.** Sign in at portal.kleahome.co.uk, then Connections in the left menu, between Guesty and Activity. Admin only, so the office login can see it but not change it.
+
+| Panel | What they type | Where it comes from |
+|---|---|---|
+| Sending emails | Mailbox password | The existing hello@kleahome.co.uk mailbox at IONOS |
+| Card payments | Secret key, signing secret | Their Stripe account |
+| Text messages | Account SID, auth token, phone number | Their Twilio account |
+
+Nothing goes in a file and nothing goes near GitHub. It is typed into that screen, stored on the server, and never shown again. Each panel has Save and Send test. The Stripe panel checks the key with Stripe before switching on, and flags test keys in amber so nobody trades on them by mistake.
+
+**Fixed today:** a "(demo)" label was still showing to clients on the booking confirmation screen. Gone. There is no demo wording left anywhere a client can see.
+
+---
+
+## STILL TO DO BEFORE HANDOVER
+
+**1. The demo data has NOT been cleared.** The live system still holds 6 made-up staff, 9 made-up clients, 64 bookings, 63 payments, 22 expenses and 2 applications. The button is built and tested (Activity page, "Clear everything and go live", then choose to leave one example on each screen) but it has never been run on live. This is a one-way job so it needs Mark's say-so and the right moment.
+
+**2. The passwords written in the code still work on the live site.** Verified today: the seeded admin password signs straight in to portal.kleahome.co.uk. Those passwords are visible to anyone with the code. Press "Generate strong passwords for everyone" on the Team logins page and save what it shows, once. Do this at handover, not before, or we lock ourselves out.
+
+**3. Two Kleaners share one login.** Sophie Turner and Sophie Hodgin both have sophie@kleahome.co.uk, so only one can sign in and she would see the other's jobs. Clearing the demo data removes both, so doing job 1 fixes this on its own.
+
+**Waiting on other people:**
+- The client's GitHub username, so they can be added to the repo
+- The SPF record on kleahome.co.uk, from whoever looks after the website
+- Klea's own account details for email, Stripe and Twilio
+- The GDPR paperwork: ICO registration, privacy policy, how long clean photos are kept
+
+**Order on the day:** clear the demo data with examples left in, add the real Kleaners and clients, generate the passwords, then switch on the Connections one at a time and send a test after each.
+
 ## 2026-09-10 — Card payments and texts wired in, plus real backups
 
 **One Connections page** now holds all three outside services: email, card payments, texts. Each is off until filled in, each keeps its secret on the server where no endpoint ever returns it, and the system works fully with all three off.

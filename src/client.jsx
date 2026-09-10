@@ -356,7 +356,7 @@ function Wizard({ cat, initialService, onExit }) {
             {result.bookings.length > 1 && result.bookings[0].status !== 'requested' && ` We've scheduled your next ${result.bookings.length} visits.`}
           </p>
           <div className="card" style={{ maxWidth: 460, margin: '0 auto', textAlign: 'left' }}>
-            <div className="small muted" style={{ marginBottom: 6 }}>Confirmation sent to {result.client.email} (demo):</div>
+            <div className="small muted" style={{ marginBottom: 6 }}>Confirmation sent to {result.client.email}:</div>
             <p>{result.confirmationMessage}</p>
           </div>
           <button className="btn" style={{ marginTop: 24 }} onClick={onExit}>Back to home</button>
