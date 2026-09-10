@@ -1,5 +1,39 @@
 # Klea — HANDOFF
 
+## 2026-09-10 — Demo data cleared, system is go-live ready
+
+**Ran the go-live clear on the live system**, leaving one labelled example on each screen. Backed up twice first: a copy of the data pulled down locally, and a second copy left on the server at `/data/db-before-golive.json`. Railway's daily backups also cover it.
+
+**What is on the live system now:**
+- One labelled example each for staff, invoices, messages, costs, applications, time off and stock. All say "EXAMPLE, delete this once you have added your own".
+- Two clients and two bookings: the example, plus **Moorehouse**, which is a real Guesty property, and its real changeover on 2027-01-02 sitting as a request.
+- Payments, payouts and timesheets empty, as they should be.
+
+**Everything that had to survive, did:** the admin and office logins, the price list and coverage, Guesty instant updates still switched on, Windermere still excluded, the Guesty token still cached so no rate-limited sign-in was burned. Guesty re-synced by itself at 12:18 and pulled the real changeover straight back in.
+
+**Both Sophies are gone.** The duplicate `sophie@kleahome.co.uk` login went with the demo staff, exactly as expected. No duplicate logins remain.
+
+**Live site checked after the clear:** homepage, prices and the booking page all fine.
+
+---
+
+## THE LAST JOB: passwords
+
+**The starter passwords still work on the live site**, and they are written in the code. This is the one thing left that actually matters.
+
+There is a local page for it at `scratchpad/new-passwords.mjs`, run with `node`, opens on http://localhost:4752. It signs in, generates strong passwords for every login, and **shows them once in the browser**. They are never written to a file and never go through the chat. Whoever runs it must copy them somewhere safe before closing the window.
+
+Everyone is signed out when it runs, so do it at handover with someone ready to save them.
+
+---
+
+## Waiting on other people
+
+- The client's GitHub username, so they can be added to the repo
+- The SPF record on kleahome.co.uk, from whoever looks after their website
+- Klea's own accounts for email (free), Stripe and Twilio, all entered on the Connections page
+- GDPR paperwork: ICO registration, privacy policy, how long clean photos are kept
+
 ## 2026-09-10 — Where the client puts their keys, and the pre-handover checklist
 
 **All three outside services are set up in one place: Connections.** Sign in at portal.kleahome.co.uk, then Connections in the left menu, between Guesty and Activity. Admin only, so the office login can see it but not change it.
