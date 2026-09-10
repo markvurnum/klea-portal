@@ -14,6 +14,7 @@ const NAV = [
   { id: 'reports', label: 'Reports', icon: 'chart' },
   { id: 'messages', label: 'Messages', icon: 'chat' },
   { id: 'guesty', label: 'Guesty', icon: 'key' },
+  { id: 'connections', label: 'Connections', icon: 'key' },
   { id: 'activity', label: 'Activity', icon: 'clipboard' },
   { id: 'logins', label: 'Team logins', icon: 'users', adminOnly: true }
 ];
@@ -66,6 +67,7 @@ export default function Admin({ page, user, onSignOut }) {
         {current === 'reports' && <Reports key={refresh} />}
         {current === 'messages' && <Messages key={refresh} user={user} />}
         {current === 'guesty' && <Guesty key={refresh} user={user} openBooking={id => setDrawer({ type: 'booking', id })} />}
+        {current === 'connections' && <Connections key={refresh} user={user} />}
         {current === 'activity' && <Activity key={refresh} />}
         {current === 'logins' && user.role === 'admin' && <Logins key={refresh} />}
       </main>
@@ -806,6 +808,179 @@ function Reports() {
 }
 
 // ---------- Messages ----------
+// ---------- Connections: the three things that get plugged in ----------
+function CardPayments({ user, onChanged }) {
+  const [s, setS] = useState(null);
+  const [key, setKey] = useState('');
+  const [hook, setHook] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = () => api.get('/api/admin/stripe').then(setS);
+  useEffect(() => { load(); }, []);
+  if (!s) return null;
+  const say = (ok, text) => { setMsg({ ok, text }); if (ok) setTimeout(() => setMsg(null), 8000); };
+
+  const saveIt = async enabled => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api.put('/api/admin/stripe', { secretKey: key || undefined, webhookSecret: hook || undefined, enabled });
+      setKey(''); setHook('');
+      await load(); onChanged?.();
+      say(true, enabled
+        ? `Connected to ${r.account?.name || 'Stripe'}${r.mode === 'test' ? '. These are TEST keys, so no real money will change hands.' : '. Real payments will now be taken.'}`
+        : 'Card payments are switched off. Bookings still work, nothing is charged.');
+    } catch (e) { say(false, e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <b>Card payments</b>
+        <span className="chip" style={s.enabled && s.hasSecretKey
+          ? { background: s.mode === 'live' ? 'var(--good)' : 'var(--warn)', color: '#fff' }
+          : { background: 'var(--line)', color: 'var(--muted)' }}>
+          {s.enabled && s.hasSecretKey ? (s.mode === 'live' ? 'Taking real payments' : 'Test mode') : 'Off'}
+        </span>
+      </div>
+      <p className="small muted" style={{ margin: '6px 0 12px' }}>
+        Clients pay on Stripe's own page, so card details never come near Klea. Until this is switched on, no money is taken and bookings are recorded as still owing.
+      </p>
+
+      {user.role !== 'admin' ? <p className="small muted">Ask the account admin to set this up.</p> : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '0 14px' }}>
+            <div className="field"><label>Secret key from Stripe</label>
+              <input type="password" value={key} autoComplete="new-password"
+                placeholder={s.hasSecretKey ? 'Saved. Leave blank to keep it' : 'sk_test_… or sk_live_…'}
+                onChange={e => setKey(e.target.value)} /></div>
+            <div className="field"><label>Signing secret (Stripe webhook)</label>
+              <input type="password" value={hook} autoComplete="new-password"
+                placeholder={s.hasWebhookSecret ? 'Saved. Leave blank to keep it' : 'whsec_…'}
+                onChange={e => setHook(e.target.value)} /></div>
+          </div>
+          <p className="small muted" style={{ margin: '0 0 12px' }}>
+            Both come from your Stripe account. They are kept on the server and never shown again. Send Stripe's notifications to <b>{location.origin}/api/stripe/webhook</b>.
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn gold small" disabled={busy} onClick={() => saveIt(true)}>
+              {busy ? 'Checking with Stripe…' : s.enabled ? 'Save' : 'Save and switch on'}
+            </button>
+            {s.enabled && <button className="btn ghost small" disabled={busy} onClick={() => saveIt(false)}>Switch off</button>}
+          </div>
+        </>
+      )}
+
+      {s.mode === 'test' && s.enabled && (
+        <div className="demo-banner" style={{ borderColor: 'var(--warn)', borderStyle: 'solid', color: 'var(--warn)', marginTop: 10 }}>
+          <b>These are test keys.</b> Bookings will look paid but no money moves. Swap them for your live keys when you are ready to trade.
+        </div>
+      )}
+      {s.lastPaidAt && <p className="small muted" style={{ marginTop: 10, marginBottom: 0 }}>Last payment taken {new Date(s.lastPaidAt).toLocaleString('en-GB')}.</p>}
+      {s.lastError && <div className="demo-banner" style={{ borderColor: 'var(--bad)', borderStyle: 'solid', color: 'var(--bad)', marginTop: 10 }}><b>Last attempt failed.</b> {s.lastError.message}</div>}
+      {msg && <div className="demo-banner" style={{ marginTop: 10, borderStyle: 'solid', borderColor: msg.ok ? 'var(--good)' : 'var(--bad)', color: msg.ok ? 'var(--good)' : 'var(--bad)' }}>{msg.ok ? '✓ ' : ''}{msg.text}</div>}
+    </div>
+  );
+}
+
+function TextMessages({ user }) {
+  const [s, setS] = useState(null);
+  const [form, setForm] = useState({});
+  const [token, setToken] = useState('');
+  const [testTo, setTestTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+  const load = () => api.get('/api/admin/sms').then(r => {
+    setS(r);
+    setForm({ accountSid: r.accountSid, from: r.from, remindersByText: r.remindersByText });
+  });
+  useEffect(() => { load(); }, []);
+  if (!s) return null;
+  const say = (ok, text) => { setMsg({ ok, text }); if (ok) setTimeout(() => setMsg(null), 6000); };
+
+  const saveIt = async enabled => {
+    setBusy(true); setMsg(null);
+    try {
+      await api.put('/api/admin/sms', { ...form, authToken: token || undefined, enabled });
+      setToken(''); await load();
+      say(true, enabled ? 'Saved. Send a test to check it works.' : 'Texts are switched off. Reminders go by email instead, free.');
+    } catch (e) { say(false, e.message); }
+    setBusy(false);
+  };
+
+  const test = async () => {
+    setBusy(true); setMsg(null);
+    try { const r = await api.post('/api/admin/sms/test', { to: testTo }); say(true, `Test text sent to ${r.to}.`); await load(); }
+    catch (e) { say(false, e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <b>Text messages</b>
+        <span className="chip" style={s.enabled && s.hasAuthToken
+          ? { background: 'var(--good)', color: '#fff' } : { background: 'var(--line)', color: 'var(--muted)' }}>
+          {s.enabled && s.hasAuthToken ? 'On' : 'Off'}
+        </span>
+      </div>
+      <p className="small muted" style={{ margin: '6px 0 12px' }}>
+        The only thing here that costs money, roughly 4p a text. Everything works without it, by email. Worth it for the day before reminder if people forget you are coming.
+      </p>
+
+      {user.role !== 'admin' ? <p className="small muted">Ask the account admin to set this up.</p> : (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '0 14px' }}>
+            <div className="field"><label>Account SID</label>
+              <input value={form.accountSid || ''} placeholder="AC…" onChange={e => setForm({ ...form, accountSid: e.target.value })} /></div>
+            <div className="field"><label>Auth token</label>
+              <input type="password" value={token} autoComplete="new-password"
+                placeholder={s.hasAuthToken ? 'Saved. Leave blank to keep it' : 'From your Twilio account'}
+                onChange={e => setToken(e.target.value)} /></div>
+            <div className="field"><label>Texts come from</label>
+              <input value={form.from || ''} placeholder="+447…" onChange={e => setForm({ ...form, from: e.target.value })} /></div>
+          </div>
+          <label className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <input type="checkbox" checked={!!form.remindersByText} onChange={e => setForm({ ...form, remindersByText: e.target.checked })} />
+            Send the day before reminder as a text rather than an email
+          </label>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button className="btn gold small" disabled={busy} onClick={() => saveIt(true)}>{busy ? 'Working…' : s.enabled ? 'Save' : 'Save and switch on'}</button>
+            {s.enabled && <button className="btn ghost small" disabled={busy} onClick={() => saveIt(false)}>Switch off</button>}
+          </div>
+          {s.enabled && s.hasAuthToken && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+              <div className="field" style={{ margin: 0, flex: '1 1 220px' }}>
+                <label>Send a test to</label>
+                <input value={testTo} onChange={e => setTestTo(e.target.value)} placeholder="07700 900123" />
+              </div>
+              <button className="btn small" disabled={busy || !testTo} onClick={test}>Send test</button>
+            </div>
+          )}
+        </>
+      )}
+
+      {s.enabled && <p className="small muted" style={{ marginTop: 10, marginBottom: 0 }}>
+        {s.sentThisMonth} text{s.sentThisMonth === 1 ? '' : 's'} sent this month, about {gbp(s.sentThisMonth * 0.04)} so far.
+      </p>}
+      {s.lastError && <div className="demo-banner" style={{ borderColor: 'var(--bad)', borderStyle: 'solid', color: 'var(--bad)', marginTop: 10 }}><b>Last attempt failed.</b> {s.lastError.message}</div>}
+      {msg && <div className="demo-banner" style={{ marginTop: 10, borderStyle: 'solid', borderColor: msg.ok ? 'var(--good)' : 'var(--bad)', color: msg.ok ? 'var(--good)' : 'var(--bad)' }}>{msg.ok ? '✓ ' : ''}{msg.text}</div>}
+    </div>
+  );
+}
+
+function Connections({ user }) {
+  return (
+    <>
+      <h1>Connections</h1>
+      <p className="muted" style={{ marginBottom: 16 }}>The outside services Klea plugs into. Each one is off until you fill it in, and everything else in the system works without them.</p>
+      <EmailSetup user={user} />
+      <CardPayments user={user} />
+      <TextMessages user={user} />
+    </>
+  );
+}
+
 // ---------- Email settings: sending through Klea's own mailbox ----------
 function EmailSetup({ user, onChanged }) {
   const [s, setS] = useState(null);
@@ -964,7 +1139,6 @@ function Messages({ user }) {
   return (
     <>
       <h1>Messages</h1>
-      <EmailSetup user={user} onChanged={load} />
       {!live && <div className="demo-banner" style={{ marginTop: 12 }}>Messages are written down here but not sent yet. Fill in the mailbox above to start sending them.</div>}
       <div className="card" style={{ marginBottom: 20 }}>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>

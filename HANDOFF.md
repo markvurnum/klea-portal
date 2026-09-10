@@ -1,5 +1,25 @@
 # Klea — HANDOFF
 
+## 2026-09-10 — Card payments and texts wired in, plus real backups
+
+**One Connections page** now holds all three outside services: email, card payments, texts. Each is off until filled in, each keeps its secret on the server where no endpoint ever returns it, and the system works fully with all three off.
+
+**Card payments (Stripe).** Clients pay on Stripe's own page, so no card number reaches Klea's server. Key design decisions worth keeping:
+- **Only the Stripe webhook marks a payment paid.** A client closing the tab mid-payment can never leave money uncollected but recorded as taken.
+- **If Stripe fails, the booking still stands** and the payment is left unpaid for the office to chase. A booking is worth more than a card payment.
+- Test keys are flagged in the interface, because trading on test keys for months is an easy and expensive mistake.
+- With Stripe off, the booking page stops pretending: it no longer asks for card details and says payment will be sorted directly, and the payment is recorded as **unpaid** rather than the old "authorised".
+
+**Texts (Twilio).** Off by default and clearly labelled as the only thing that costs money, about 4p each. `tidyNumber()` refuses landlines rather than paying for a text that cannot arrive. There is a checkbox to send the day-before reminder by text instead of email, and the page shows how many have gone this month and roughly what they have cost.
+
+**Backups, which were genuinely missing.** Railway had no backup schedule at all. Now a **daily volume backup** with a Restore button, plus one taken immediately (2026-09-10 12:35). Worth being clear: **GitHub backs up the code only.** `server/data/` is gitignored, so adding someone to GitHub does nothing for clients, bookings or staff records.
+
+**One real bug caught by testing:** Stripe's bracketed parameters were being built wrongly, so the amount and currency never reached Stripe. Every payment would have failed. Fixed and covered by a test.
+
+**Tested:** 31 cases against fake Stripe and Twilio. Nothing can be charged or texted while switched off, a mistyped key is refused, test keys are flagged, the right amount in pence and pounds sterling reaches Stripe, a payment under 30p is refused rather than erroring at the till, forged and replayed and altered Stripe notifications are all refused, UK numbers are tidied, landlines refused, and neither secret ever leaves the server. Checked at 375px.
+
+**NEXT STEP:** none of the three can be switched on without Klea's own account details. Email needs the IONOS mailbox password, Stripe needs an account and its keys, texts need a Twilio account. All three go in on the Connections page.
+
 ## 2026-09-10 — Emails now actually send, through Klea's own mailbox
 
 **Klea's email is on IONOS, not Google.** So rather than adding a third party, the system sends straight through their own hello@kleahome.co.uk mailbox. Replies land back in that same inbox where the office already works. No new account, no new bill, nothing to pay.

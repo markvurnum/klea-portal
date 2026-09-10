@@ -118,6 +118,8 @@ function Wizard({ cat, initialService, onExit }) {
   const [avail, setAvail] = useState(null);
   const [details, setDetails] = useState({ name: '', email: '', phone: '', address: '' });
   const [card, setCard] = useState({ number: '', expiry: '', cvc: '' });
+  const [payMode, setPayMode] = useState(null);
+  useEffect(() => { api.get('/api/pay-mode').then(setPayMode).catch(() => setPayMode({ cardOnStripe: false })); }, []);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
@@ -145,7 +147,9 @@ function Wizard({ cat, initialService, onExit }) {
   async function submit() {
     setError('');
     if (!details.name || !details.email) { setError('Please fill in your name and email.'); return; }
-    if (!card.number || card.number.replace(/\s/g, '').length < 12) { setError('Please enter a card number (any digits work in demo mode).'); return; }
+    if (!payMode?.cardOnStripe && (!card.number || card.number.replace(/\s/g, '').length < 12)) {
+      setError('Please enter a card number.'); return;
+    }
     setBusy(true);
     try {
       const res = await api.post('/api/bookings', {
@@ -153,6 +157,8 @@ function Wizard({ cat, initialService, onExit }) {
         serviceId, size, addonIds, frequency, teamClean, date, time,
         staffId: staffPick?.staffId
       });
+      // Stripe takes the payment on its own page, so hand the client over
+      if (res.checkoutUrl) { window.location.href = res.checkoutUrl; return; }
       setResult(res);
       setStep(5);
     } catch (e) { setError(e.message); }
@@ -299,19 +305,25 @@ function Wizard({ cat, initialService, onExit }) {
       {step === 4 && quoteData && (
         <>
           <h2>Your details</h2>
-          <div className="demo-banner">🔒 Demo mode — no real payment is taken. Card details are not stored or sent anywhere.</div>
+          {payMode?.cardOnStripe
+            ? <div className="demo-banner">🔒 You will be taken to our card provider to pay securely. Klea never sees your card details.</div>
+            : <div className="demo-banner">No payment is taken online at the moment. We will confirm your booking and sort payment with you directly.</div>}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 14px' }}>
             <div className="field"><label>Full name</label><input value={details.name} onChange={e => setDetails({ ...details, name: e.target.value })} /></div>
             <div className="field"><label>Email</label><input type="email" value={details.email} onChange={e => setDetails({ ...details, email: e.target.value })} /></div>
             <div className="field"><label>Phone</label><input value={details.phone} onChange={e => setDetails({ ...details, phone: e.target.value })} /></div>
             <div className="field"><label>Address</label><input value={details.address} onChange={e => setDetails({ ...details, address: e.target.value })} /></div>
           </div>
-          <h3 style={{ margin: '10px 0 12px', fontSize: 16 }}>Payment</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '0 14px' }}>
-            <div className="field"><label>Card number</label><input placeholder="4242 4242 4242 4242" value={card.number} onChange={e => setCard({ ...card, number: e.target.value })} /></div>
-            <div className="field"><label>Expiry</label><input placeholder="12/28" value={card.expiry} onChange={e => setCard({ ...card, expiry: e.target.value })} /></div>
-            <div className="field"><label>CVC</label><input placeholder="123" value={card.cvc} onChange={e => setCard({ ...card, cvc: e.target.value })} /></div>
-          </div>
+          {payMode && !payMode.cardOnStripe && (
+            <>
+              <h3 style={{ margin: '10px 0 12px', fontSize: 16 }}>Payment</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '0 14px' }}>
+                <div className="field"><label>Card number</label><input placeholder="4242 4242 4242 4242" value={card.number} onChange={e => setCard({ ...card, number: e.target.value })} /></div>
+                <div className="field"><label>Expiry</label><input placeholder="12/28" value={card.expiry} onChange={e => setCard({ ...card, expiry: e.target.value })} /></div>
+                <div className="field"><label>CVC</label><input placeholder="123" value={card.cvc} onChange={e => setCard({ ...card, cvc: e.target.value })} /></div>
+              </div>
+            </>
+          )}
           <div className="card" style={{ marginTop: 8 }}>
             <div className="summary-line"><span>{quoteData.service} ({svc.sized === 'bedrooms' ? size + ' bed' : size + ' sqm'})</span><span>{gbp(quoteData.base)}</span></div>
             {quoteData.addons.map(a => <div key={a.id} className="summary-line"><span>{a.name}</span><span>{gbp(a.price)}</span></div>)}

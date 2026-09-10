@@ -15,6 +15,11 @@ import {
 import crypto from 'crypto';
 import { attachUser, requireRole, requireSelfOrOffice, verifyPassword, hashPassword, issueToken, logAction, seedUsers } from './auth.js';
 import { isEmailConfigured, safeEmailSettings, sendMail, queueMail } from './mailer.js';
+import {
+  isStripeConfigured, safeStripeSettings, checkStripeKey,
+  createCheckoutSession, retrieveSession, verifyStripeSignature
+} from './payments.js';
+import { isSmsConfigured, safeSmsSettings, sendSms, tidyNumber, smsSettings } from './sms.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -30,7 +35,9 @@ app.use((req, res, next) => { res.set('X-Robots-Tag', 'noindex, nofollow'); next
 app.use(express.json({
   limit: '10mb',
   verify: (req, res, buf) => {
-    if (req.url.startsWith('/api/guesty/webhook')) req.rawBody = buf.toString('utf8');
+    if (req.url.startsWith('/api/guesty/webhook') || req.url.startsWith('/api/stripe/webhook')) {
+      req.rawBody = buf.toString('utf8');
+    }
   }
 }));
 app.use(attachUser);
@@ -42,17 +49,37 @@ save();
 // Every message to a client goes through here: it is written down, and if the
 // mailbox is connected it is also sent. With email switched off this behaves
 // exactly as it did before, storing the message without sending it.
-function notifyClient(db, { clientId, bookingId = null, channel = 'email', subject, body }) {
+function notifyClient(db, { clientId, bookingId = null, channel = 'email', subject, body, preferSms = false }) {
+  const client = db.clients.find(c => c.id === +clientId);
+
+  // A few messages are better as a text, but only if the office has switched
+  // texts on and is happy to pay for them. Otherwise it goes by email, free.
+  const byText = preferSms && isSmsConfigured(db)
+    && smsSettings(db).remindersByText && tidyNumber(client?.phone);
+
   const m = {
     id: nextId('messages'), clientId: +clientId, bookingId,
-    channel, direction: 'out', body,
+    channel: byText ? 'sms' : channel, direction: 'out', body,
     subject: subject || 'Klea',
     createdAt: new Date().toISOString(),
     emailStatus: 'not sent'
   };
   db.messages.push(m);
 
-  const client = db.clients.find(c => c.id === m.clientId);
+  if (byText) {
+    m.emailStatus = 'sending';
+    m.smsStatus = 'sending';
+    sendSms({ to: client.phone, body }, db)
+      .then(() => { m.smsStatus = 'sent'; m.emailStatus = 'sent'; db.settings.sms.lastSentAt = new Date().toISOString(); db.settings.sms.lastError = null; save(); })
+      .catch(err => {
+        m.smsStatus = 'failed'; m.emailStatus = 'failed'; m.emailError = err.message;
+        db.settings.sms.lastError = { message: err.message, at: new Date().toISOString() };
+        console.error('Text failed:', err.message);
+        save();
+      });
+    return m;
+  }
+
   const to = (client?.email || '').trim();
   if (!isEmailConfigured(db)) return m;
   if (!to) { m.emailStatus = 'no email address'; return m; }
@@ -333,6 +360,133 @@ app.post('/api/admin/guesty/listings/:guestyId', requireRole('admin', 'office'),
   logAction(sync ? 'switched a Guesty property on' : 'switched a Guesty property off', id, req);
   save();
   res.json({ synced: sync, removedChangeovers: removed });
+});
+
+// ---------- Card payments through Stripe ----------
+// Klea's server never sees a card number. The client pays on Stripe's own page.
+app.get('/api/admin/stripe', requireRole('admin', 'office'), (req, res) => {
+  res.json(safeStripeSettings(getDb()));
+});
+
+app.put('/api/admin/stripe', requireRole('admin'), async (req, res) => {
+  const db = getDb();
+  const current = db.settings.stripe || {};
+  const { secretKey, webhookSecret, enabled } = req.body;
+  const next = { ...current, enabled: enabled === undefined ? !!current.enabled : !!enabled };
+  if (secretKey) next.secretKey = secretKey.trim();
+  if (webhookSecret !== undefined) next.webhookSecret = (webhookSecret || '').trim();
+
+  if (next.enabled && !next.secretKey) {
+    return res.status(400).json({ error: 'Enter the secret key from Stripe first.' });
+  }
+  if (next.secretKey && !/^sk_(test|live)_/.test(next.secretKey)) {
+    return res.status(400).json({ error: 'That does not look like a Stripe secret key. It should start sk_test_ or sk_live_.' });
+  }
+
+  db.settings.stripe = next;
+  db.settings.stripe.lastError = null;
+  save();
+
+  // Prove the key works now rather than at the till
+  if (next.enabled) {
+    try {
+      const account = await checkStripeKey(db);
+      logAction('turned on card payments', `${account.name} (${safeStripeSettings(db).mode} mode)`, req);
+      save();
+      return res.json({ ...safeStripeSettings(db), account });
+    } catch (e) {
+      db.settings.stripe.enabled = false;
+      db.settings.stripe.lastError = { message: e.message, at: new Date().toISOString() };
+      save();
+      return res.status(400).json({ error: `${e.message} Card payments have been left switched off.` });
+    }
+  }
+  logAction('turned off card payments', '', req);
+  save();
+  res.json(safeStripeSettings(db));
+});
+
+// Stripe tells us here when a payment actually goes through. This is the only
+// thing that marks a booking paid: a client closing the tab at the wrong moment
+// must never leave money uncollected but marked as taken.
+app.post('/api/stripe/webhook', (req, res) => {
+  const db = getDb();
+  const check = verifyStripeSignature(req.rawBody || '', req.headers['stripe-signature'], db.settings.stripe?.webhookSecret);
+  if (!check.ok) {
+    db.settings.stripe = db.settings.stripe || {};
+    db.settings.stripe.lastError = { message: check.reason, at: new Date().toISOString() };
+    save();
+    return res.status(401).json({ error: 'Signature check failed.' });
+  }
+
+  const event = req.body;
+  if (event?.type === 'checkout.session.completed') {
+    const session = event.data?.object || {};
+    const paymentId = +(session.metadata?.paymentId || session.client_reference_id || 0);
+    const p = db.payments.find(x => x.id === paymentId);
+    if (p && p.status !== 'paid') {
+      p.status = 'paid';
+      p.method = 'Card';
+      p.stripeSessionId = session.id;
+      p.paidAt = new Date().toISOString();
+      db.settings.stripe.lastPaidAt = p.paidAt;
+      db.settings.stripe.lastError = null;
+      const c = db.clients.find(x => x.id === p.clientId);
+      logAction('took a card payment', `${c?.name || 'a client'}, £${p.amount}`, null);
+      save();
+    }
+  }
+  res.json({ received: true });
+});
+
+// ---------- Text messages through Twilio ----------
+app.get('/api/admin/sms', requireRole('admin', 'office'), (req, res) => {
+  res.json(safeSmsSettings(getDb()));
+});
+
+app.put('/api/admin/sms', requireRole('admin'), (req, res) => {
+  const db = getDb();
+  const current = db.settings.sms || {};
+  const { accountSid, authToken, from, enabled, remindersByText } = req.body;
+  const next = {
+    ...current,
+    accountSid: (accountSid ?? current.accountSid ?? '').trim(),
+    from: (from ?? current.from ?? '').trim(),
+    enabled: enabled === undefined ? !!current.enabled : !!enabled,
+    remindersByText: remindersByText === undefined ? !!current.remindersByText : !!remindersByText
+  };
+  if (authToken) next.authToken = authToken.trim();
+
+  if (next.enabled) {
+    if (!next.accountSid) return res.status(400).json({ error: 'Enter the account SID from Twilio.' });
+    if (!next.authToken) return res.status(400).json({ error: 'Enter the auth token from Twilio.' });
+    if (!next.from) return res.status(400).json({ error: 'Enter the number the texts should come from.' });
+  }
+
+  db.settings.sms = next;
+  db.settings.sms.lastError = null;
+  logAction(next.enabled ? 'turned on text messages' : 'turned off text messages', next.from, req);
+  save();
+  res.json(safeSmsSettings(db));
+});
+
+app.post('/api/admin/sms/test', requireRole('admin'), async (req, res) => {
+  const db = getDb();
+  const to = (req.body.to || '').trim();
+  if (!to) return res.status(400).json({ error: 'Enter a mobile number to send the test to.' });
+  if (!isSmsConfigured(db)) return res.status(400).json({ error: 'Fill in the Twilio details and save them first.' });
+  try {
+    const r = await sendSms({ to, body: 'Test from the Klea system. If you can read this, texts are working. Klea' }, db);
+    db.settings.sms.lastSentAt = new Date().toISOString();
+    db.settings.sms.lastError = null;
+    logAction('sent a test text', r.to, req);
+    save();
+    res.json({ ok: true, to: r.to });
+  } catch (e) {
+    db.settings.sms.lastError = { message: e.message, at: new Date().toISOString() };
+    save();
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // ---------- Email: sending through Klea's own mailbox ----------
@@ -947,6 +1101,11 @@ function staffOptions({ date, postcode, durationMins, excludeBookingId = null })
   return options;
 }
 
+// Tells the booking page whether payment happens on Stripe's page or not at all
+app.get('/api/pay-mode', (req, res) => {
+  res.json({ cardOnStripe: isStripeConfigured(getDb()) });
+});
+
 app.get('/api/availability', (req, res) => {
   const { date, postcode = '', duration = '120' } = req.query;
   if (!date) return res.status(400).json({ error: 'date required' });
@@ -954,7 +1113,7 @@ app.get('/api/availability', (req, res) => {
 });
 
 // ---------- Booking creation (client side) ----------
-app.post('/api/bookings', (req, res) => {
+app.post('/api/bookings', async (req, res) => {
   const db = getDb();
   const { client, serviceId, size, addonIds = [], frequency = 'once', teamClean = false, date, time, staffId, notes = '', occurrences } = req.body;
   if (!client?.name || !client?.email || !client?.postcode) return res.status(400).json({ error: 'Client name, email and postcode are required.' });
@@ -1006,7 +1165,43 @@ app.post('/api/bookings', (req, res) => {
   }
 
   // demo payment record (first visit) — replace with Stripe when keys are added
-  db.payments.push({ id: nextId('payments'), bookingId: created[0].id, clientId: c.id, amount: created[0].price, method: 'Card (demo)', status: 'authorised', date: created[0].date });
+  // With Stripe connected this is a real payment, taken on Stripe's own page and
+  // only marked paid once Stripe confirms it. Without it, nothing is charged and
+  // the payment is recorded as still owing rather than pretending it was taken.
+  const takingCard = isStripeConfigured(db);
+  const payment = {
+    id: nextId('payments'), bookingId: created[0].id, clientId: c.id,
+    amount: created[0].price,
+    method: takingCard ? 'Card' : 'Not collected',
+    status: takingCard ? 'awaiting payment' : 'unpaid',
+    date: created[0].date
+  };
+  db.payments.push(payment);
+
+  let checkoutUrl = null;
+  if (takingCard) {
+    const svcLabel = SERVICES.find(x => x.id === serviceId)?.name || 'Clean';
+    const origin = `${req.protocol}://${req.get('x-forwarded-host') || req.get('host')}`;
+    try {
+      const session = await createCheckoutSession(db, {
+        amount: created[0].price,
+        description: `${svcLabel}, ${created[0].date} at ${time}`,
+        clientEmail: c.email,
+        paymentId: payment.id,
+        successUrl: `${origin}/#/paid?booking=${created[0].id}`,
+        cancelUrl: `${origin}/#/book`
+      });
+      checkoutUrl = session.url;
+      payment.stripeSessionId = session.id;
+    } catch (e) {
+      // A booking is worth more than a card payment, so the booking stands and
+      // the office chases the money rather than the client losing their slot.
+      payment.status = 'unpaid';
+      payment.method = 'Not collected';
+      db.settings.stripe.lastError = { message: e.message, at: new Date().toISOString() };
+      console.error('Stripe checkout failed:', e.message);
+    }
+  }
 
   // confirmation message (demo — logged, not actually sent)
   const staffName = db.staff.find(s => s.id === chosenStaffId)?.name || 'your cleaner';
@@ -1021,7 +1216,7 @@ app.post('/api/bookings', (req, res) => {
   });
 
   save();
-  res.status(201).json({ bookings: created, client: c, quote: q, staffName, confirmationMessage: body });
+  res.status(201).json({ bookings: created, client: c, quote: q, staffName, confirmationMessage: body, checkoutUrl });
 });
 
 // ---------- Admin ----------
@@ -1898,7 +2093,7 @@ function runReminders() {
     const svc = SERVICES.find(x => x.id === b.serviceId);
     if (!c) continue;
     notifyClient(db, {
-      clientId: c.id, bookingId: b.id,
+      clientId: c.id, bookingId: b.id, preferSms: true,
       subject: `Your clean tomorrow at ${b.start}`,
       body: `Hi ${c.name.split(' ')[0]}, a reminder that ${s?.name || 'your cleaner'} will be with you tomorrow at ${b.start} for your ${(svc?.name || 'clean').toLowerCase()}. Klea ✦`
     });

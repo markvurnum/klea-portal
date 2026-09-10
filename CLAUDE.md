@@ -88,8 +88,9 @@ src/
 ```
 
 **Storage is a single JSON file**, at `server/data/db.json` locally and `/data`
-on the server. No database server. This is fine at Klea's size but has no
-automatic backups yet, which is the main thing to improve before heavy use.
+on the server. No database server. Railway takes a **daily volume backup** with
+a Restore button, set up 2026-09-10. Note that GitHub holds the code only:
+`server/data/` is gitignored, so pushing never backs up clients or bookings.
 
 **Changing prices, services, add-ons, checklists or FAQs** means editing
 `server/catalogue.js`. Nothing else needs touching.
@@ -170,6 +171,33 @@ Credentials live in environment variables, never in the code:
 
 ---
 
+## Connections: email, card payments, texts
+
+All three are set up by an admin on the **Connections** page, all three are off
+until filled in, and all three keep their secret on the server where **no
+endpoint ever returns it**. The `safe*Settings()` helpers are the only thing the
+interface sees. Everything else in the system works with all three switched off.
+
+**Card payments (`server/payments.js`, Stripe).** The client pays on Stripe's own
+page, so no card number ever reaches Klea's server. A booking creates a payment
+row marked `awaiting payment` plus a Checkout Session, and **only the Stripe
+webhook marks it paid**, so closing the tab mid-payment cannot leave money
+uncollected but recorded as taken. If Stripe fails, the booking still stands and
+the payment is left unpaid, because a booking is worth more than a card payment.
+Stripe's parameters are bracketed paths like
+`line_items[0][price_data][unit_amount]`; build them as exact flat keys or the
+amount silently goes missing. Test keys are flagged in the interface, because
+taking pretend money for months is an easy mistake.
+
+**Texts (`server/sms.js`, Twilio).** The only thing here that costs money, about
+4p a message, so it is off by default and the reminder falls back to email.
+`tidyNumber()` turns 07700 900123 into +447700900123 and **returns null for a
+landline**, so nobody is charged for a text that cannot arrive.
+
+**Email** is below.
+
+---
+
 ## Email
 
 Sent through Klea's own IONOS mailbox, not a third party, so it costs nothing
@@ -186,8 +214,8 @@ and replies land back in the inbox the office already works in.
 - The mailbox password lives in `settings.email.pass` on the server volume. It
   is **never returned by any endpoint**, not even to an admin. `safeEmailSettings()`
   is the only thing the interface ever sees.
-- Set up on the **Messages** page: address, display name, password, then a test
-  send. Admin only.
+- Set up on the **Connections** page: address, display name, password, then a
+  test send. Admin only.
 
 **IONOS traps:**
 - They cap sending at roughly 500 a day and refuse bursts, so outgoing mail goes
@@ -223,15 +251,12 @@ Always verify against the live site afterwards rather than assuming.
 photos, ratings, Kleaner app, client portal, payroll, invoices, costs, profit
 and loss, Guesty, recruitment, logins and roles.
 
-**Not connected yet:**
-- **Card payments.** The form accepts a card and charges nothing, but records
-  the booking as paid. Revenue figures are therefore not real until Stripe is
-  connected.
-- **Text messages.** Written and stored but not sent. Would need Twilio or
-  similar, which costs money. Everything currently goes out by email instead.
+**Built but not switched on**, all three on the Connections page and all needing
+Klea's own account details: email (free, IONOS), card payments (Stripe), texts
+(Twilio, about 4p each).
 
-**Also outstanding:** automatic backups of the live database, and the GDPR
-paperwork (ICO registration, privacy policy, photo retention).
+**Still outstanding:** the SPF record on kleahome.co.uk, and the GDPR paperwork
+(ICO registration, privacy policy, photo retention).
 
 ---
 
