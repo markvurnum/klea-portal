@@ -170,6 +170,39 @@ Credentials live in environment variables, never in the code:
 
 ---
 
+## Email
+
+Sent through Klea's own IONOS mailbox, not a third party, so it costs nothing
+and replies land back in the inbox the office already works in.
+
+- `server/mailer.js` speaks SMTP directly over Node's own TLS, keeping the
+  project to its single dependency. Plain text, UTF-8 base64 so the £ and the
+  Klea ✦ survive.
+- **Every message to a client goes through `notifyClient()`** in `index.js`.
+  Nothing writes to `db.messages` directly. That one function stores the message
+  and, if the mailbox is connected, sends it.
+- With no mailbox set up it stores without sending, exactly as before, so the
+  system is safe to run un-configured.
+- The mailbox password lives in `settings.email.pass` on the server volume. It
+  is **never returned by any endpoint**, not even to an admin. `safeEmailSettings()`
+  is the only thing the interface ever sees.
+- Set up on the **Messages** page: address, display name, password, then a test
+  send. Admin only.
+
+**IONOS traps:**
+- They cap sending at roughly 500 a day and refuse bursts, so outgoing mail goes
+  on a queue with a gap between each one (`DEFAULT_GAP_MS`). Do not remove that
+  and fire a day of reminders at once.
+- A brand new mailbox is throttled harder for its first five days.
+- SMTP replies can arrive before anything is waiting for them, so the greeting
+  is buffered. An unreachable server must reject the connect promise, or the
+  whole queue hangs behind it. Both caught by tests, do not undo them.
+
+**kleahome.co.uk has no SPF or DMARC record.** Adding SPF is needed for good
+delivery and is still outstanding. It is their web person's job, on the domain.
+
+---
+
 ## Deploying
 
 Hosted on Railway. Pushing to the `main` branch on GitHub is the normal way to
@@ -194,8 +227,8 @@ and loss, Guesty, recruitment, logins and roles.
 - **Card payments.** The form accepts a card and charges nothing, but records
   the booking as paid. Revenue figures are therefore not real until Stripe is
   connected.
-- **Messages.** Confirmations and reminders are written and stored but never
-  actually sent. Needs an email and SMS provider.
+- **Text messages.** Written and stored but not sent. Would need Twilio or
+  similar, which costs money. Everything currently goes out by email instead.
 
 **Also outstanding:** automatic backups of the live database, and the GDPR
 paperwork (ICO registration, privacy policy, photo retention).

@@ -64,7 +64,7 @@ export default function Admin({ page, user, onSignOut }) {
         {current === 'costs' && <Costs key={refresh} />}
         {current === 'invoices' && <Invoices key={refresh} openClient={id => setDrawer({ type: 'client', id })} />}
         {current === 'reports' && <Reports key={refresh} />}
-        {current === 'messages' && <Messages key={refresh} />}
+        {current === 'messages' && <Messages key={refresh} user={user} />}
         {current === 'guesty' && <Guesty key={refresh} user={user} openBooking={id => setDrawer({ type: 'booking', id })} />}
         {current === 'activity' && <Activity key={refresh} />}
         {current === 'logins' && user.role === 'admin' && <Logins key={refresh} />}
@@ -806,11 +806,143 @@ function Reports() {
 }
 
 // ---------- Messages ----------
-function Messages() {
+// ---------- Email settings: sending through Klea's own mailbox ----------
+function EmailSetup({ user, onChanged }) {
+  const [s, setS] = useState(null);
+  const [form, setForm] = useState({});
+  const [pass, setPass] = useState('');
+  const [testTo, setTestTo] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const load = () => api.get('/api/admin/email').then(r => {
+    setS(r);
+    setForm({ host: r.host, port: r.port, from: r.from, fromName: r.fromName, replyTo: r.replyTo, enabled: r.enabled });
+    if (!testTo) setTestTo(r.from || '');
+  });
+  useEffect(() => { load(); }, []);
+  if (!s) return null;
+
+  const say = (ok, text) => { setMsg({ ok, text }); if (ok) setTimeout(() => setMsg(null), 6000); };
+
+  const saveIt = async (enabled) => {
+    setBusy(true); setMsg(null);
+    try {
+      await api.put('/api/admin/email', { ...form, enabled, pass: pass || undefined });
+      setPass('');
+      await load();
+      onChanged?.();
+      say(true, enabled ? 'Saved. Send a test to check it works.' : 'Sending is switched off. Messages are still written down.');
+    } catch (e) { say(false, e.message); }
+    setBusy(false);
+  };
+
+  const test = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api.post('/api/admin/email/test', { to: testTo });
+      say(true, `Test sent to ${r.to}. Have a look in that inbox.`);
+      await load();
+    } catch (e) { say(false, e.message); }
+    setBusy(false);
+  };
+
+  const canEdit = user.role === 'admin';
+
+  return (
+    <div className="card" style={{ marginBottom: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <b>Sending emails</b>
+        <span className="chip" style={s.enabled && s.hasPassword
+          ? { background: 'var(--good)', color: '#fff' }
+          : { background: 'var(--line)', color: 'var(--muted)' }}>
+          {s.enabled && s.hasPassword ? 'On' : 'Off'}
+        </span>
+      </div>
+      <p className="small muted" style={{ margin: '6px 0 12px' }}>
+        Emails go out from your own Klea mailbox, and anything a client replies comes straight back to that same inbox, where you read it as normal. Nothing else is involved and there is nothing to pay.
+      </p>
+
+      {!canEdit && <p className="small muted">Ask the account admin to set this up.</p>}
+
+      {canEdit && (
+        <>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '0 14px' }}>
+            <div className="field"><label>Emails come from</label>
+              <input value={form.from || ''} placeholder="hello@kleahome.co.uk"
+                onChange={e => setForm({ ...form, from: e.target.value })} />
+            </div>
+            <div className="field"><label>Name shown to clients</label>
+              <input value={form.fromName || ''} placeholder="Klea"
+                onChange={e => setForm({ ...form, fromName: e.target.value })} />
+            </div>
+            <div className="field"><label>Mailbox password</label>
+              <input type="password" value={pass} autoComplete="new-password"
+                placeholder={s.hasPassword ? 'Saved. Leave blank to keep it' : 'The password for that mailbox'}
+                onChange={e => setPass(e.target.value)} />
+            </div>
+          </div>
+          <p className="small muted" style={{ margin: '0 0 12px' }}>
+            The password is kept on the server and never shown again, not even here. It is the password for that mailbox at IONOS.
+          </p>
+
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button className="btn gold small" disabled={busy} onClick={() => saveIt(true)}>
+              {busy ? 'Working…' : s.enabled ? 'Save' : 'Save and switch on'}
+            </button>
+            {s.enabled && <button className="btn ghost small" disabled={busy} onClick={() => saveIt(false)}>Switch off</button>}
+          </div>
+
+          {s.enabled && s.hasPassword && (
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--line)' }}>
+              <div className="field" style={{ margin: 0, flex: '1 1 240px' }}>
+                <label>Send a test to</label>
+                <input value={testTo} onChange={e => setTestTo(e.target.value)} placeholder="your own address" />
+              </div>
+              <button className="btn small" disabled={busy || !testTo} onClick={test}>Send test</button>
+            </div>
+          )}
+
+          <details style={{ marginTop: 14 }}>
+            <summary className="small muted" style={{ cursor: 'pointer' }}>Advanced</summary>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0 14px', marginTop: 10 }}>
+              <div className="field"><label>Outgoing server</label>
+                <input value={form.host || ''} onChange={e => setForm({ ...form, host: e.target.value })} /></div>
+              <div className="field"><label>Port</label>
+                <input value={form.port || ''} onChange={e => setForm({ ...form, port: e.target.value })} /></div>
+              <div className="field"><label>Replies go to</label>
+                <input value={form.replyTo || ''} placeholder="same as the from address"
+                  onChange={e => setForm({ ...form, replyTo: e.target.value })} /></div>
+            </div>
+          </details>
+        </>
+      )}
+
+      {s.lastSentAt && <p className="small muted" style={{ marginTop: 10, marginBottom: 0 }}>Last email sent {new Date(s.lastSentAt).toLocaleString('en-GB')}.</p>}
+
+      {s.lastError && (
+        <div className="demo-banner" style={{ borderColor: 'var(--bad)', borderStyle: 'solid', color: 'var(--bad)', marginTop: 10 }}>
+          <b>Last attempt failed.</b> {s.lastError.message}
+        </div>
+      )}
+      {msg && (
+        <div className="demo-banner" style={{ marginTop: 10, borderStyle: 'solid', borderColor: msg.ok ? 'var(--good)' : 'var(--bad)', color: msg.ok ? 'var(--good)' : 'var(--bad)' }}>
+          {msg.ok ? '✓ ' : ''}{msg.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Messages({ user }) {
   const [rows, setRows] = useState(null);
   const [clients, setClients] = useState([]);
-  const [form, setForm] = useState({ clientId: '', channel: 'sms', body: '' });
-  const load = () => api.get('/api/admin/messages').then(setRows);
+  const [live, setLive] = useState(false);
+  const [form, setForm] = useState({ clientId: '', channel: 'email', body: '' });
+  const load = () => Promise.all([
+    api.get('/api/admin/messages'),
+    api.get('/api/admin/email').catch(() => null)
+  ]).then(([m, e]) => { setRows(m); setLive(!!(e?.enabled && e?.hasPassword)); });
   useEffect(() => { load(); api.get('/api/admin/clients').then(setClients); }, []);
   if (!rows) return <p className="muted">Loading…</p>;
 
@@ -821,12 +953,21 @@ function Messages() {
     load();
   };
 
+  const stateChip = m => {
+    if (m.emailStatus === 'sent') return <span className="chip" style={{ background: 'var(--good)', color: '#fff' }}>Sent</span>;
+    if (m.emailStatus === 'sending') return <span className="chip">Sending…</span>;
+    if (m.emailStatus === 'failed') return <span className="chip bad" title={m.emailError}>Did not send</span>;
+    if (m.emailStatus === 'no email address') return <span className="chip">No email address</span>;
+    return null;
+  };
+
   return (
     <>
       <h1>Messages</h1>
-      <div className="demo-banner" style={{ marginTop: 12 }}>Demo mode — messages are logged here, not actually sent. Plug in Twilio / email keys to go live.</div>
+      <EmailSetup user={user} onChanged={load} />
+      {!live && <div className="demo-banner" style={{ marginTop: 12 }}>Messages are written down here but not sent yet. Fill in the mailbox above to start sending them.</div>}
       <div className="card" style={{ marginBottom: 20 }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 120px', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
           <div className="field" style={{ margin: 0 }}>
             <label>To</label>
             <select value={form.clientId} onChange={e => setForm({ ...form, clientId: e.target.value })}>
@@ -835,24 +976,28 @@ function Messages() {
             </select>
           </div>
           <div className="field" style={{ margin: 0 }}>
-            <label>Channel</label>
-            <select value={form.channel} onChange={e => setForm({ ...form, channel: e.target.value })}>
-              <option value="sms">SMS</option><option value="email">Email</option>
-            </select>
+            <label>Subject</label>
+            <input value={form.subject || ''} placeholder="A message from Klea"
+              onChange={e => setForm({ ...form, subject: e.target.value })} />
           </div>
         </div>
         <div className="field" style={{ marginTop: 12 }}>
           <label>Message</label>
           <textarea rows="3" value={form.body} onChange={e => setForm({ ...form, body: e.target.value })} placeholder="Hi, just confirming your clean tomorrow at 9am…" />
         </div>
-        <button className="btn gold" onClick={send} disabled={!form.clientId || !form.body}>Send (demo)</button>
+        <button className="btn gold" onClick={send} disabled={!form.clientId || !form.body}>{live ? 'Send' : 'Save message'}</button>
       </div>
       {rows.map(m => (
         <div key={m.id} className="msg">
-          <div className="small muted" style={{ marginBottom: 4 }}>
-            To <b>{m.clientName}</b> · {m.channel.toUpperCase()} · {new Date(m.createdAt).toLocaleString('en-GB')}
+          <div className="small muted" style={{ marginBottom: 4, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span>To <b>{m.clientName}</b> · {new Date(m.createdAt).toLocaleString('en-GB')}</span>
+            {stateChip(m)}
           </div>
+          {m.subject && <div style={{ fontWeight: 700, marginBottom: 3 }}>{m.subject}</div>}
           {m.body}
+          {m.emailStatus === 'failed' && m.emailError && (
+            <div className="small" style={{ color: 'var(--bad)', marginTop: 6 }}>{m.emailError}</div>
+          )}
         </div>
       ))}
     </>

@@ -1,5 +1,26 @@
 # Klea — HANDOFF
 
+## 2026-09-10 — Emails now actually send, through Klea's own mailbox
+
+**Klea's email is on IONOS, not Google.** So rather than adding a third party, the system sends straight through their own hello@kleahome.co.uk mailbox. Replies land back in that same inbox where the office already works. No new account, no new bill, nothing to pay.
+
+- `server/mailer.js`: a small SMTP client on Node's own TLS, so the project keeps its single dependency. Plain text, UTF-8 base64, so £ and the Klea ✦ arrive intact.
+- **Every client message now goes through `notifyClient()`.** Nine separate `db.messages.push` calls collapsed into one path that stores and sends. With no mailbox configured it stores without sending, exactly as before, so nothing breaks un-configured.
+- **Set up on the Messages page**, admin only: address, display name, password, save, send a test. The password is stored on the server and **never returned by any endpoint**, not even to the admin screen.
+- Every message shows Sent / Sending / Did not send, with the reason.
+- Outgoing mail goes on a **queue with a gap between sends**, because IONOS caps at roughly 500 a day and refuses bursts.
+- The day-before reminder was written as a text message. It now goes by email, which is free. Texts would cost roughly 4p each.
+
+**Two real bugs found by testing, both fixed:**
+1. SMTP servers greet you before you ask anything. That greeting was being thrown away, so every send hung. Replies arriving before anyone waits are now buffered.
+2. An unreachable mail server left the send hanging for ever, which would have wedged the whole outgoing queue on the live system. The connect promise now rejects properly.
+
+**Tested:** 22 cases against a fake IONOS speaking real SMTP over TLS. Sends correctly, signs in as the mailbox, From and Reply-To both the Klea address, Message-ID present so replies thread, body exactly intact including £ and ✦, awkward subject lines encoded, wrong password refused in plain English, unreachable server fails cleanly, sending-off refuses, password never leaves the server, batches spaced out. Checked at 375px, no horizontal scroll.
+
+**OUTSTANDING, and it is not ours to do:** kleahome.co.uk has **no SPF and no DMARC record at all**. Emails will deliver less well than they should, and anyone can currently spoof their domain. Their web person needs to add it. This is worth chasing before the client leans on email.
+
+**NEXT STEP:** get the IONOS mailbox password into the Messages page and send a test. Nothing sends until then.
+
 ## 2026-09-09 — Guesty instant updates (webhooks), and the client-save fix proven on production
 
 **Client-save complaint: closed.** Verified two ways rather than trusting the earlier fix.

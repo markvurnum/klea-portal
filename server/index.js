@@ -14,6 +14,7 @@ import {
 } from './guesty.js';
 import crypto from 'crypto';
 import { attachUser, requireRole, requireSelfOrOffice, verifyPassword, hashPassword, issueToken, logAction, seedUsers } from './auth.js';
+import { isEmailConfigured, safeEmailSettings, sendMail, queueMail } from './mailer.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -37,6 +38,31 @@ app.use(attachUser);
 loadDb(seed);
 seedUsers(getDb());
 save();
+
+// Every message to a client goes through here: it is written down, and if the
+// mailbox is connected it is also sent. With email switched off this behaves
+// exactly as it did before, storing the message without sending it.
+function notifyClient(db, { clientId, bookingId = null, channel = 'email', subject, body }) {
+  const m = {
+    id: nextId('messages'), clientId: +clientId, bookingId,
+    channel, direction: 'out', body,
+    subject: subject || 'Klea',
+    createdAt: new Date().toISOString(),
+    emailStatus: 'not sent'
+  };
+  db.messages.push(m);
+
+  const client = db.clients.find(c => c.id === m.clientId);
+  const to = (client?.email || '').trim();
+  if (!isEmailConfigured(db)) return m;
+  if (!to) { m.emailStatus = 'no email address'; return m; }
+  // A Guesty property is a placeholder address, not a real inbox
+  if (/@guesty\.local$/i.test(to)) { m.emailStatus = 'no email address'; return m; }
+
+  m.emailStatus = 'sending';
+  queueMail({ to, toName: client.name, subject: m.subject, text: body, messageRef: m.id });
+  return m;
+}
 
 const toMins = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 const toTime = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
@@ -307,6 +333,70 @@ app.post('/api/admin/guesty/listings/:guestyId', requireRole('admin', 'office'),
   logAction(sync ? 'switched a Guesty property on' : 'switched a Guesty property off', id, req);
   save();
   res.json({ synced: sync, removedChangeovers: removed });
+});
+
+// ---------- Email: sending through Klea's own mailbox ----------
+// The password is stored on the server and never sent back out, not even to an
+// admin screen. Everything goes out as, and comes back to, the Klea mailbox.
+app.get('/api/admin/email', requireRole('admin', 'office'), (req, res) => {
+  res.json(safeEmailSettings(getDb()));
+});
+
+app.put('/api/admin/email', requireRole('admin'), (req, res) => {
+  const db = getDb();
+  const { host, port, user, pass, from, fromName, replyTo, enabled } = req.body;
+  const current = db.settings.email || {};
+
+  const next = {
+    ...current,
+    host: (host || current.host || 'smtp.ionos.co.uk').trim(),
+    port: +(port || current.port || 465),
+    user: (user ?? current.user ?? '').trim(),
+    from: (from ?? current.from ?? '').trim(),
+    fromName: (fromName ?? current.fromName ?? 'Klea').trim(),
+    replyTo: (replyTo ?? current.replyTo ?? '').trim(),
+    enabled: enabled === undefined ? !!current.enabled : !!enabled
+  };
+  // An empty password means "leave the one already saved alone"
+  if (pass) next.pass = pass;
+
+  if (next.enabled) {
+    if (!next.from) return res.status(400).json({ error: 'Enter the address emails should come from.' });
+    if (!next.user) next.user = next.from;
+    if (!next.pass) return res.status(400).json({ error: 'Enter the password for that mailbox.' });
+  }
+
+  db.settings.email = next;
+  db.settings.email.lastError = null;
+  logAction(next.enabled ? 'turned on sending emails' : 'turned off sending emails', next.from, req);
+  save();
+  res.json(safeEmailSettings(db));
+});
+
+// Proves it works before anyone relies on it. Sends immediately rather than
+// going on the queue, so the answer comes back while they are still looking.
+app.post('/api/admin/email/test', requireRole('admin'), async (req, res) => {
+  const db = getDb();
+  const to = (req.body.to || '').trim();
+  if (!to) return res.status(400).json({ error: 'Enter an address to send the test to.' });
+  if (!isEmailConfigured(db)) return res.status(400).json({ error: 'Fill in the mailbox details and save them first.' });
+  try {
+    await sendMail({
+      to, toName: '',
+      subject: 'Test from the Klea system',
+      text: 'This is a test.\n\nIf you can read this, the Klea system can send emails from your own mailbox, '
+        + 'and anything a client replies will come back to that same inbox.\n\nKlea'
+    }, db);
+    db.settings.email.lastSentAt = new Date().toISOString();
+    db.settings.email.lastError = null;
+    logAction('sent a test email', to, req);
+    save();
+    res.json({ ok: true, to });
+  } catch (e) {
+    db.settings.email.lastError = { message: e.message, at: new Date().toISOString() };
+    save();
+    res.status(400).json({ error: e.message });
+  }
 });
 
 // ---------- Instant updates from Guesty (webhooks) ----------
@@ -924,7 +1014,11 @@ app.post('/api/bookings', (req, res) => {
   const body = initialStatus === 'requested'
     ? `Hi ${c.name.split(' ')[0]}, we have received your request for a ${svcName.toLowerCase()} on ${created[0].date} at ${time}. We will confirm it shortly. Klea ✦`
     : `Hi ${c.name.split(' ')[0]}, your ${svcName.toLowerCase()} is booked for ${created[0].date} at ${time}. ${staffName} will be looking after you.${frequency !== 'once' ? ` We have set this up ${q.frequency.toLowerCase()} going forward.` : ''} Klea ✦`;
-  db.messages.push({ id: nextId('messages'), clientId: c.id, bookingId: created[0].id, channel: 'email', direction: 'out', body, createdAt: new Date().toISOString() });
+  notifyClient(db, {
+    clientId: c.id, bookingId: created[0].id,
+    subject: initialStatus === 'requested' ? 'We have your booking request' : `Your clean is booked for ${created[0].date}`,
+    body
+  });
 
   save();
   res.status(201).json({ bookings: created, client: c, quote: q, staffName, confirmationMessage: body });
@@ -1038,10 +1132,10 @@ app.post('/api/admin/bookings', requireRole('admin', 'office'), (req, res) => {
   db.payments.push({ id: nextId('payments'), bookingId: created[0].id, clientId: c.id, amount: created[0].price, method: 'Invoice (demo)', status: 'authorised', date: created[0].date });
   const staffName = db.staff.find(s => s.id === chosenStaffId)?.name || 'your cleaner';
   const svcName = SERVICES.find(s => s.id === serviceId)?.name || 'clean';
-  db.messages.push({
-    id: nextId('messages'), clientId: c.id, bookingId: created[0].id, channel: 'email', direction: 'out',
-    body: `Hi ${c.name.split(' ')[0]}, your ${svcName.toLowerCase()} is booked for ${created[0].date} at ${time}. ${staffName} will be looking after you. Klea ✦`,
-    createdAt: new Date().toISOString()
+  notifyClient(db, {
+    clientId: c.id, bookingId: created[0].id,
+    subject: `Your clean is booked for ${created[0].date}`,
+    body: `Hi ${c.name.split(' ')[0]}, your ${svcName.toLowerCase()} is booked for ${created[0].date} at ${time}. ${staffName} will be looking after you. Klea ✦`
   });
   logAction('added a booking', `${c.name}, ${created[0].date} ${time}`, req);
   save();
@@ -1093,10 +1187,10 @@ app.patch('/api/admin/bookings/:id', requireRole('admin', 'office', 'kleaner'), 
   if (status === 'booked' && b.status === 'requested') {
     const c = db.clients.find(x => x.id === b.clientId);
     const staffName = db.staff.find(x => x.id === b.staffId)?.name || 'your cleaner';
-    if (c) db.messages.push({
-      id: nextId('messages'), clientId: c.id, bookingId: b.id, channel: 'email', direction: 'out',
-      body: `Hi ${c.name.split(' ')[0]}, your clean on ${b.date} at ${b.start} is confirmed. ${staffName} will be looking after you. Klea ✦`,
-      createdAt: new Date().toISOString()
+    if (c) notifyClient(db, {
+      clientId: c.id, bookingId: b.id,
+      subject: `Your clean on ${b.date} is confirmed`,
+      body: `Hi ${c.name.split(' ')[0]}, your clean on ${b.date} at ${b.start} is confirmed. ${staffName} will be looking after you. Klea ✦`
     });
   }
   if (status && status !== b.status) logAction(`marked a clean ${status.replace('_', ' ')}`, `booking #${b.id}`, req);
@@ -1459,10 +1553,10 @@ app.post('/api/portal/bookings/:id/cancel', (req, res) => {
   if (b.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled.' });
   applyCancellation(db, b);
   b.status = 'cancelled';
-  db.messages.push({
-    id: nextId('messages'), clientId: c.id, bookingId: b.id, channel: 'email', direction: 'out',
-    body: `Hi ${c.name.split(' ')[0]}, your clean on ${b.date} at ${b.start} is cancelled.${b.cancellationFee > 0 ? ` As it was after midday the day before, a 50% fee of £${b.cancellationFee} applies.` : ' No charge.'} Klea ✦`,
-    createdAt: new Date().toISOString()
+  notifyClient(db, {
+    clientId: c.id, bookingId: b.id,
+    subject: `Your clean on ${b.date} is cancelled`,
+    body: `Hi ${c.name.split(' ')[0]}, your clean on ${b.date} at ${b.start} is cancelled.${b.cancellationFee > 0 ? ` As it was after midday the day before, a 50% fee of £${b.cancellationFee} applies.` : ' No charge.'} Klea ✦`
   });
   save();
   res.json({ booking: expandBooking(b) });
@@ -1485,10 +1579,10 @@ app.post('/api/portal/bookings/:id/reschedule', (req, res) => {
   const fit = keep || opts.find(o => o.slots.includes(time));
   if (!fit) return res.status(409).json({ error: 'That slot is not available. Try another time.' });
   b.date = date; b.start = time; b.staffId = fit.staffId;
-  db.messages.push({
-    id: nextId('messages'), clientId: c.id, bookingId: b.id, channel: 'email', direction: 'out',
-    body: `Hi ${c.name.split(' ')[0]}, your clean has moved to ${date} at ${time}. ${fit.name} will be with you. Klea ✦`,
-    createdAt: new Date().toISOString()
+  notifyClient(db, {
+    clientId: c.id, bookingId: b.id,
+    subject: `Your clean has moved to ${date}`,
+    body: `Hi ${c.name.split(' ')[0]}, your clean has moved to ${date} at ${time}. ${fit.name} will be with you. Klea ✦`
   });
   save();
   res.json({ booking: expandBooking(b) });
@@ -1551,10 +1645,10 @@ app.post('/api/admin/bookings/:id/reclean', requireRole('admin', 'office'), (req
   };
   db.bookings.push(rc);
   const c = db.clients.find(x => x.id === b.clientId);
-  db.messages.push({
-    id: nextId('messages'), clientId: b.clientId, bookingId: rc.id, channel: 'email', direction: 'out',
-    body: `Hi ${c?.name?.split(' ')[0] || 'there'}, we are sorry your last clean was not quite right. We have booked a free re-clean for ${rc.date} at ${rc.start}, no charge. Klea`,
-    createdAt: new Date().toISOString()
+  notifyClient(db, {
+    clientId: b.clientId, bookingId: rc.id,
+    subject: 'We have booked your free re-clean',
+    body: `Hi ${c?.name?.split(' ')[0] || 'there'}, we are sorry your last clean was not quite right. We have booked a free re-clean for ${rc.date} at ${rc.start}, no charge. Klea`
   });
   save();
   res.status(201).json({ reclean: expandBooking(rc) });
@@ -1728,10 +1822,9 @@ app.get('/api/admin/messages', requireRole('admin', 'office'), (req, res) => {
 
 app.post('/api/admin/messages', requireRole('admin', 'office'), (req, res) => {
   const db = getDb();
-  const { clientId, channel = 'sms', body } = req.body;
+  const { clientId, channel = 'email', body, subject } = req.body;
   if (!clientId || !body) return res.status(400).json({ error: 'clientId and body required' });
-  const m = { id: nextId('messages'), clientId: +clientId, bookingId: null, channel, direction: 'out', body, createdAt: new Date().toISOString() };
-  db.messages.push(m);
+  const m = notifyClient(db, { clientId, channel, subject: subject || 'A message from Klea', body });
   save();
   res.status(201).json({ ...m, clientName: db.clients.find(c => c.id === m.clientId)?.name });
 });
@@ -1804,10 +1897,10 @@ function runReminders() {
     const s = db.staff.find(x => x.id === b.staffId);
     const svc = SERVICES.find(x => x.id === b.serviceId);
     if (!c) continue;
-    db.messages.push({
-      id: nextId('messages'), clientId: c.id, bookingId: b.id, channel: 'sms', direction: 'out',
-      body: `Hi ${c.name.split(' ')[0]}, a reminder that ${s?.name || 'your cleaner'} will be with you tomorrow at ${b.start} for your ${(svc?.name || 'clean').toLowerCase()}. Klea ✦`,
-      createdAt: new Date().toISOString()
+    notifyClient(db, {
+      clientId: c.id, bookingId: b.id,
+      subject: `Your clean tomorrow at ${b.start}`,
+      body: `Hi ${c.name.split(' ')[0]}, a reminder that ${s?.name || 'your cleaner'} will be with you tomorrow at ${b.start} for your ${(svc?.name || 'clean').toLowerCase()}. Klea ✦`
     });
     b.reminderSent = true;
     sent++;
