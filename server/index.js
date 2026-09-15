@@ -515,9 +515,9 @@ app.put('/api/admin/email', requireRole('admin'), (req, res) => {
   if (pass) next.pass = pass;
 
   if (next.enabled) {
-    if (!next.from) return res.status(400).json({ error: 'Enter the address emails should come from.' });
+    if (!next.from) return res.status(400).json({ error: 'The "Emails come from" box is empty. Put the mailbox address in it, for example hello@kleahome.co.uk.' });
     if (!next.user) next.user = next.from;
-    if (!next.pass) return res.status(400).json({ error: 'Enter the password for that mailbox.' });
+    if (!next.pass) return res.status(400).json({ error: 'The "Mailbox password" box is empty. Put in the password for that mailbox at IONOS.' });
   }
 
   db.settings.email = next;

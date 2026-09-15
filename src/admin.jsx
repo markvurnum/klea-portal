@@ -992,8 +992,11 @@ function EmailSetup({ user, onChanged }) {
 
   const load = () => api.get('/api/admin/email').then(r => {
     setS(r);
-    setForm({ host: r.host, port: r.port, from: r.from, fromName: r.fromName, replyTo: r.replyTo, enabled: r.enabled });
-    if (!testTo) setTestTo(r.from || '');
+    // Fill the address in rather than showing it as grey placeholder text, which
+    // reads as already filled and leaves people saving an empty box
+    const from = r.from || user.email || '';
+    setForm({ host: r.host, port: r.port, from, fromName: r.fromName, replyTo: r.replyTo, enabled: r.enabled });
+    if (!testTo) setTestTo(from);
   });
   useEffect(() => { load(); }, []);
   if (!s) return null;
@@ -1044,7 +1047,7 @@ function EmailSetup({ user, onChanged }) {
         <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '0 14px' }}>
             <div className="field"><label>Emails come from</label>
-              <input value={form.from || ''} placeholder="hello@kleahome.co.uk"
+              <input value={form.from || ''} placeholder="the mailbox address, e.g. hello@kleahome.co.uk"
                 onChange={e => setForm({ ...form, from: e.target.value })} />
             </div>
             <div className="field"><label>Name shown to clients</label>
