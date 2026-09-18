@@ -94,6 +94,7 @@ function notifyClient(db, { clientId, bookingId = null, channel = 'email', subje
 const toMins = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
 const toTime = m => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 const round2 = n => Math.round(n * 100) / 100;
+const gbpish = n => '£' + (Math.round(n * 100) / 100).toFixed(2);
 
 // ---------- Legal / compliance ----------
 // A check "warns" 60 days before its renewal date and "fails" once overdue/missing.
@@ -138,24 +139,94 @@ function applyCancellation(db, b) {
   if (pay) { pay.amount = b.cancellationFee; pay.status = b.cancellationFee > 0 ? 'cancellation fee (demo)' : 'refunded (demo)'; }
 }
 
-// Weekend cleans can pay a different rate when one is set on the cleaner
-function rateFor(s, dateISO) {
+// ---------- What a Kleaner gets paid ----------
+// Pay is set on the job, not on the person. Each job carries the hours it is
+// worth and the rate for that job, because the same Kleaner might be on £14.50
+// for a barber shop and £16.50 for a deep clean. Where two Kleaners share a
+// job, the hours are split between them.
+//
+// Older bookings were paid from the length of the job and a rate on the staff
+// record, so they are read through the same shape rather than being rewritten.
+const DEFAULT_PAY_RATE = 15;
+
+function defaultRateFor(db, staffId, dateISO) {
+  const s = (db.staff || []).find(x => x.id === staffId);
+  if (!s) return db.settings.defaultPayRate || DEFAULT_PAY_RATE;
   const day = new Date(dateISO + 'T12:00:00').getDay();
-  return (day === 0 || day === 6) && s.weekendRate ? s.weekendRate : (s.rate || 0);
+  if ((day === 0 || day === 6) && s.weekendRate) return s.weekendRate;
+  return s.rate || db.settings.defaultPayRate || DEFAULT_PAY_RATE;
+}
+
+// Always returns [{ staffId, hours, rate }], whatever shape the booking is in
+function assignmentsFor(db, b) {
+  if (Array.isArray(b.assignments) && b.assignments.length) {
+    return b.assignments.map(a => ({
+      staffId: a.staffId,
+      hours: round2(+a.hours || 0),
+      rate: +a.rate || defaultRateFor(db, a.staffId, b.date)
+    }));
+  }
+  if (!b.staffId) return [];
+  const hours = b.allocatedHours != null ? +b.allocatedHours : (b.durationMins || 0) / 60;
+  return [{
+    staffId: b.staffId,
+    hours: round2(hours),
+    rate: b.payRate != null ? +b.payRate : defaultRateFor(db, b.staffId, b.date)
+  }];
+}
+
+// The hours the job is worth in total, however many people are on it
+function allocatedHoursFor(b) {
+  if (Array.isArray(b.assignments) && b.assignments.length) {
+    return round2(b.assignments.reduce((t, a) => t + (+a.hours || 0), 0));
+  }
+  return round2(b.allocatedHours != null ? +b.allocatedHours : (b.durationMins || 0) / 60);
+}
+
+// Splits the hours evenly across whoever is on the job
+function splitAssignments(db, b, staffIds, totalHours, rateOverride) {
+  const ids = [...new Set(staffIds.filter(Boolean).map(Number))];
+  if (!ids.length) return [];
+  const each = round2(totalHours / ids.length);
+  return ids.map(id => ({
+    staffId: id,
+    hours: each,
+    rate: rateOverride != null ? round2(+rateOverride) : defaultRateFor(db, id, b.date)
+  }));
 }
 
 function staffEarnings(s) {
   const db = getDb();
-  const done = db.bookings.filter(b => b.staffId === s.id && b.status === 'completed');
-  const extras = (db.timesheets || []).filter(t => t.staffId === s.id);
-  const jobHours = done.reduce((t, b) => t + b.durationMins / 60, 0);
-  const extraHours = extras.reduce((t, e) => t + e.hours, 0);
-  const earned = round2(
-    done.reduce((t, b) => t + (b.durationMins / 60) * rateFor(s, b.date), 0) +
-    extras.reduce((t, e) => t + e.hours * rateFor(s, e.date), 0)
+  const done = db.bookings.filter(b =>
+    b.status === 'completed' && assignmentsFor(db, b).some(a => a.staffId === s.id)
   );
+
+  let jobHours = 0, earned = 0;
+  for (const b of done) {
+    for (const a of assignmentsFor(db, b)) {
+      if (a.staffId !== s.id) continue;
+      jobHours += a.hours;
+      earned += a.hours * a.rate;
+    }
+  }
+
+  // Hours the office adds by hand, for anything agreed outside the portal
+  const extras = (db.timesheets || []).filter(t => t.staffId === s.id);
+  const extraHours = extras.reduce((t, e) => t + (+e.hours || 0), 0);
+  const extraPay = extras.reduce((t, e) =>
+    t + (+e.hours || 0) * (e.rate != null ? +e.rate : defaultRateFor(db, s.id, e.date)), 0);
+
   const paid = round2((db.payouts || []).filter(p => p.staffId === s.id).reduce((t, p) => t + p.amount, 0));
-  return { jobsDone: done.length, hours: round2(jobHours + extraHours), earned, paid, due: round2(earned - paid) };
+  const total = round2(earned + extraPay);
+  return {
+    jobsDone: done.length,
+    hours: round2(jobHours + extraHours),
+    jobHours: round2(jobHours),
+    extraHours: round2(extraHours),
+    earned: total,
+    paid,
+    due: round2(total - paid)
+  };
 }
 
 // ---------- Auth ----------
@@ -1221,8 +1292,10 @@ app.post('/api/bookings', async (req, res) => {
 
 // ---------- Admin ----------
 // Kleaners never see what the client is charged
+// Kleaners never see what the client is charged. They do see the hours the job
+// is worth, because that is what they are paid on.
 function stripMoney(b) {
-  const { price, teamSupplement, ...rest } = b;
+  const { price, teamSupplement, assignments, payRate, ...rest } = b;
   return rest;
 }
 
@@ -1278,7 +1351,14 @@ app.get('/api/admin/summary', requireRole('admin', 'office'), (req, res) => {
     todayJobs: live.filter(b => b.date === today).map(expandBooking).sort((a, b) => a.start.localeCompare(b.start)),
     upcomingCount: live.filter(b => b.date > today && b.date <= weekAhead && b.status === 'booked').length,
     subscriptions: new Set(live.filter(b => b.seriesId).map(b => b.seriesId)).size,
-    revenueMonth: Math.round(db.payments.filter(p => p.date >= monthStart && p.date <= today).reduce((t, p) => t + p.amount, 0) * 100) / 100,
+    // Money actually taken: card payments that went through, plus invoices marked
+    // paid. Invoices were being left out entirely, which is why this read low.
+    revenueMonth: round2(
+      db.payments.filter(p => p.status === 'paid' && p.date >= monthStart && p.date <= today)
+        .reduce((t, p) => t + p.amount, 0)
+      + (db.invoices || []).filter(i => i.status === 'paid' && (i.paidDate || i.issuedDate) >= monthStart && (i.paidDate || i.issuedDate) <= today)
+        .reduce((t, i) => t + i.amount, 0)
+    ),
     revenueBookedAhead: Math.round(live.filter(b => b.date > today && b.status === 'booked').reduce((t, b) => t + b.price, 0) * 100) / 100,
     avgRating: (() => {
       const rated = db.bookings.filter(b => b.status === 'completed' && b.rating);
@@ -1376,7 +1456,8 @@ app.patch('/api/admin/bookings/:id', requireRole('admin', 'office', 'kleaner'), 
       return res.status(403).json({ error: 'You can only start or finish your own cleans.' });
     }
   }
-  const { status, staffId, date, start, notes, rating } = req.body;
+  const { status, staffId, staffIds, date, start, notes, rating,
+          allocatedHours, payRate, price, durationMins } = req.body;
   if (rating !== undefined) b.rating = rating === null ? null : Math.max(1, Math.min(5, +rating));
   if (status && status === 'cancelled' && b.status !== 'cancelled') applyCancellation(db, b);
   if (status === 'booked' && b.status === 'requested') {
@@ -1389,15 +1470,46 @@ app.patch('/api/admin/bookings/:id', requireRole('admin', 'office', 'kleaner'), 
     });
   }
   if (status && status !== b.status) logAction(`marked a clean ${status.replace('_', ' ')}`, `booking #${b.id}`, req);
-  if (staffId && staffId !== b.staffId) {
-    const to = db.staff.find(x => x.id === +staffId);
-    logAction('reassigned a clean', `booking #${b.id} to ${to?.name || 'someone'}`, req);
-  }
   if (status) b.status = status;
-  if (staffId) b.staffId = staffId;
   if (date) b.date = date;
   if (start) b.start = start;
   if (notes !== undefined) b.notes = notes;
+  if (durationMins !== undefined && +durationMins > 0) b.durationMins = Math.round(+durationMins);
+  if (price !== undefined && +price >= 0) b.price = round2(+price);
+
+  // Hours and pay live on the job, and can be shared between Kleaners
+  const hoursGiven = allocatedHours !== undefined && +allocatedHours >= 0;
+  const peopleGiven = Array.isArray(staffIds);
+  if (hoursGiven || peopleGiven || payRate !== undefined || staffId) {
+    const people = peopleGiven ? staffIds : (staffId ? [staffId] : assignmentsFor(db, b).map(a => a.staffId));
+    const hours = hoursGiven ? +allocatedHours : allocatedHoursFor(b);
+    const rate = payRate !== undefined && +payRate >= 0 ? +payRate : null;
+
+    if (people.length) {
+      const previous = assignmentsFor(db, b);
+      b.assignments = splitAssignments(db, b, people, hours, rate);
+      // Keep whatever each person was already on unless a new rate was given
+      if (rate === null) {
+        for (const a of b.assignments) {
+          const was = previous.find(x => x.staffId === a.staffId);
+          if (was) a.rate = was.rate;
+        }
+      }
+      b.staffId = b.assignments[0].staffId;
+      b.allocatedHours = round2(hours);
+      if (b.assignments.length > 1) b.teamClean = true;
+    } else {
+      b.assignments = [];
+      b.staffId = null;
+      b.allocatedHours = round2(hours);
+    }
+  }
+
+  if (peopleGiven || staffId) {
+    const names = assignmentsFor(db, b).map(a => db.staff.find(x => x.id === a.staffId)?.name).filter(Boolean);
+    logAction('changed who is on a clean', `booking #${b.id} to ${names.join(' and ') || 'nobody'}`, req);
+  }
+
   save();
   res.json(expandBooking(b));
 });
@@ -1644,8 +1756,21 @@ app.get('/api/cleaner/:id/week', requireRole('admin', 'office', 'kleaner'), requ
     staff: { id: s.id, name: s.name, photo: s.photo, days: s.days, start: s.start, end: s.end },
     days,
     jobs: db.bookings
-      .filter(b => b.staffId === s.id && days.includes(b.date) && b.status !== 'cancelled' && b.status !== 'requested')
-      .map(expandBooking).map(b => req.user.role === 'kleaner' ? stripMoney(b) : b),
+      .filter(b => assignmentsFor(db, b).some(a => a.staffId === s.id)
+        && days.includes(b.date) && b.status !== 'cancelled')
+      .map(b => {
+        const mine = assignmentsFor(db, b).find(a => a.staffId === s.id);
+        const others = assignmentsFor(db, b).filter(a => a.staffId !== s.id)
+          .map(a => db.staff.find(x => x.id === a.staffId)?.name).filter(Boolean);
+        const full = expandBooking(b);
+        const out = {
+          ...full,
+          myHours: mine ? mine.hours : allocatedHoursFor(b),
+          sharedWith: others,
+          response: (b.responses || {})[s.id] || null
+        };
+        return req.user.role === 'kleaner' ? stripMoney(out) : out;
+      }),
     absences: (db.absences || []).filter(a => a.staffId === s.id && a.from <= days[6] && a.to >= days[0])
   });
 });
@@ -1662,17 +1787,71 @@ app.patch('/api/cleaner/:id/hours', requireRole('admin', 'office', 'kleaner'), r
   res.json({ days: s.days, start: s.start, end: s.end });
 });
 
-app.post('/api/cleaner/:id/timesheet', requireRole('admin', 'office', 'kleaner'), requireSelfOrOffice, (req, res) => {
+// Extra hours are agreed away from the portal and added by the office, not
+// claimed by the Kleaner. Pay comes from the job itself now.
+app.post('/api/admin/payroll/:staffId/hours', requireRole('admin', 'office'), (req, res) => {
   const db = getDb();
-  const s = db.staff.find(x => x.id === +req.params.id);
+  const s = db.staff.find(x => x.id === +req.params.staffId);
   if (!s) return res.status(404).json({ error: 'Not found' });
-  const { date, hours, note = '' } = req.body;
-  if (!date || !hours || +hours <= 0 || +hours > 12) return res.status(400).json({ error: 'Enter a date and up to 12 hours.' });
+  const { date, hours, note = '', rate } = req.body;
+  if (!date || !hours || +hours <= 0 || +hours > 24) {
+    return res.status(400).json({ error: 'Enter a date and up to 24 hours.' });
+  }
   if (!db.timesheets) db.timesheets = [];
-  const t = { id: nextId('timesheets'), staffId: s.id, date, hours: round2(+hours), note, loggedAt: new Date().toISOString() };
+  const t = {
+    id: nextId('timesheets'), staffId: s.id, date, hours: round2(+hours),
+    rate: rate !== undefined && +rate >= 0 ? round2(+rate) : defaultRateFor(db, s.id, date),
+    note, addedBy: req.user?.name || 'Office', loggedAt: new Date().toISOString()
+  };
   db.timesheets.push(t);
+  logAction('added extra hours', `${s.name}, ${t.hours}h at ${gbpish(t.rate)}`, req);
   save();
   res.status(201).json(t);
+});
+
+app.delete('/api/admin/payroll/hours/:id', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const idx = (db.timesheets || []).findIndex(t => t.id === +req.params.id);
+  if (idx === -1) return res.status(404).json({ error: 'Not found' });
+  const [removed] = db.timesheets.splice(idx, 1);
+  const s = db.staff.find(x => x.id === removed.staffId);
+  logAction('removed extra hours', `${s?.name || 'someone'}, ${removed.hours}h`, req);
+  save();
+  res.json({ ok: true });
+});
+
+// A Kleaner is offered the job and says yes or no. Declining takes them off it
+// and drops it into the office's unassigned list.
+app.post('/api/cleaner/:id/jobs/:bookingId/response', requireRole('admin', 'office', 'kleaner'), requireSelfOrOffice, (req, res) => {
+  const db = getDb();
+  const s = db.staff.find(x => x.id === +req.params.id);
+  const b = db.bookings.find(x => x.id === +req.params.bookingId);
+  if (!s || !b) return res.status(404).json({ error: 'Not found' });
+  const answer = req.body.response;
+  if (!['accepted', 'declined'].includes(answer)) {
+    return res.status(400).json({ error: 'Answer accepted or declined.' });
+  }
+  if (!assignmentsFor(db, b).some(a => a.staffId === s.id)) {
+    return res.status(403).json({ error: 'That job is not offered to you.' });
+  }
+
+  b.responses = b.responses || {};
+  b.responses[s.id] = answer;
+
+  if (answer === 'declined') {
+    const left = assignmentsFor(db, b).filter(a => a.staffId !== s.id);
+    // Whoever is left keeps the job, and picks up the hours between them
+    b.assignments = left.length
+      ? splitAssignments(db, b, left.map(a => a.staffId), allocatedHoursFor(b), null)
+        .map(a => ({ ...a, rate: left.find(x => x.staffId === a.staffId)?.rate ?? a.rate }))
+      : [];
+    b.staffId = b.assignments.length ? b.assignments[0].staffId : null;
+    delete b.responses[s.id];
+  }
+
+  logAction(answer === 'accepted' ? 'accepted a job' : 'turned down a job', `${s.name}, booking #${b.id}`, req);
+  save();
+  res.json({ ok: true, response: answer });
 });
 
 app.post('/api/staff/:id/documents', requireRole('admin', 'office', 'kleaner'), requireSelfOrOffice, (req, res) => {
@@ -1922,20 +2101,55 @@ app.get('/api/admin/payroll', requireRole('admin', 'office'), (req, res) => {
 });
 
 // Per-cleaner breakdown: every completed job and manual time entry, grouped by week
+// What the "taken this month" figure is actually made of, line by line
+app.get('/api/admin/revenue', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const to = req.query.to || new Date().toISOString().slice(0, 10);
+  const from = req.query.from || to.slice(0, 8) + '01';
+  const rows = [];
+
+  for (const p of db.payments.filter(p => p.status === 'paid' && p.date >= from && p.date <= to)) {
+    const c = db.clients.find(x => x.id === p.clientId);
+    rows.push({ type: 'Card payment', date: p.date, client: c?.name || 'Unknown', ref: p.method || 'Card', amount: round2(p.amount) });
+  }
+  for (const i of (db.invoices || []).filter(i => i.status === 'paid')) {
+    const when = i.paidDate || i.issuedDate;
+    if (!when || when < from || when > to) continue;
+    const c = db.clients.find(x => x.id === i.clientId);
+    rows.push({ type: 'Invoice', date: when, client: c?.name || 'Unknown', ref: i.number || '', amount: round2(i.amount) });
+  }
+  rows.sort((a, b) => b.date.localeCompare(a.date));
+
+  const outstanding = (db.invoices || []).filter(i => i.status === 'unpaid');
+  res.json({
+    from, to,
+    total: round2(rows.reduce((t, r) => t + r.amount, 0)),
+    rows,
+    stillOwed: round2(outstanding.reduce((t, i) => t + i.amount, 0)),
+    stillOwedCount: outstanding.length
+  });
+});
+
 app.get('/api/admin/payroll/:staffId', requireRole('admin', 'office'), (req, res) => {
   const db = getDb();
   const s = db.staff.find(x => x.id === +req.params.staffId);
   if (!s) return res.status(404).json({ error: 'Not found' });
   const entries = [];
-  for (const b of db.bookings.filter(b => b.staffId === s.id && b.status === 'completed')) {
-    const c = db.clients.find(x => x.id === b.clientId);
-    const hours = round2(b.durationMins / 60);
-    const rate = rateFor(s, b.date);
-    entries.push({ type: 'job', date: b.date, label: `${c?.name || 'Client'} · ${SERVICES.find(x => x.id === b.serviceId)?.name || 'Clean'}`, hours, rate, amount: round2(hours * rate) });
+  for (const b of db.bookings.filter(b => b.status === 'completed')) {
+    for (const a of assignmentsFor(db, b)) {
+      if (a.staffId !== s.id) continue;
+      const c = db.clients.find(x => x.id === b.clientId);
+      const shared = assignmentsFor(db, b).length > 1;
+      entries.push({
+        type: 'job', bookingId: b.id, date: b.date,
+        label: `${c?.name || 'Client'} · ${SERVICES.find(x => x.id === b.serviceId)?.name || 'Clean'}${shared ? ' (shared job)' : ''}`,
+        hours: a.hours, rate: a.rate, amount: round2(a.hours * a.rate)
+      });
+    }
   }
   for (const t of (db.timesheets || []).filter(t => t.staffId === s.id)) {
-    const rate = rateFor(s, t.date);
-    entries.push({ type: 'extra', date: t.date, label: t.note || 'Extra time logged', hours: t.hours, rate, amount: round2(t.hours * rate) });
+    const rate = t.rate != null ? +t.rate : defaultRateFor(db, s.id, t.date);
+    entries.push({ type: 'extra', id: t.id, date: t.date, label: t.note || 'Added by the office', hours: t.hours, rate, amount: round2(t.hours * rate) });
   }
   const weekStart = d => {
     const dt = new Date(d + 'T12:00:00');
@@ -1986,10 +2200,10 @@ app.get('/api/admin/pnl', requireRole('admin', 'office'), (req, res) => {
     const label = d.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
     const revenue = round2(db.payments.filter(p => p.status === 'paid' && p.date.startsWith(prefix)).reduce((t, p) => t + p.amount, 0));
     const doneJobs = db.bookings.filter(b => b.status === 'completed' && b.date.startsWith(prefix));
-    const wages = round2(doneJobs.reduce((t, b) => {
-      const s = db.staff.find(x => x.id === b.staffId);
-      return t + (b.durationMins / 60) * (s ? rateFor(s, b.date) : 0);
-    }, 0));
+    const wages = round2(doneJobs.reduce((t, b) =>
+      t + assignmentsFor(db, b).reduce((w, a) => w + a.hours * a.rate, 0), 0)
+      + (db.timesheets || []).filter(t2 => (t2.date || '').startsWith(prefix))
+        .reduce((w, t2) => w + (+t2.hours || 0) * (t2.rate != null ? +t2.rate : defaultRateFor(db, t2.staffId, t2.date)), 0));
     const monthExpenses = (db.expenses || []).filter(e => e.date.startsWith(prefix));
     const supplies = round2(monthExpenses.filter(e => e.category === 'supplies').reduce((t, e) => t + e.amount, 0));
     const byCategory = {};
