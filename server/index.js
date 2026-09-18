@@ -10,7 +10,7 @@ import {
   CHANGEOVER_START, CHANGEOVER_END,
   WEBHOOK_EVENTS, listWebhooks, createWebhook, deleteWebhook, fetchWebhookSecret,
   verifyWebhookSignature, alreadySeen, normaliseWebhookReservation,
-  cacheListings, cachedListings
+  cacheListings, cachedListings, fetchReservationNotes, fetchPropertyNotes, buildAccessNote
 } from './guesty.js';
 import crypto from 'crypto';
 import { attachUser, requireRole, requireSelfOrOffice, verifyPassword, hashPassword, issueToken, logAction, seedUsers } from './auth.js';
@@ -120,6 +120,9 @@ function complianceFor(s) {
 
 function companyLegalStatus() {
   const db = getDb();
+  // Older seeded entries have no id, so give them one on the way past
+  let next = (db.settings.companyLegal || []).reduce((m, d) => Math.max(m, d.id || 0), 0);
+  for (const d of (db.settings.companyLegal || [])) if (!d.id) d.id = ++next;
   return (db.settings.companyLegal || []).map(doc => ({
     ...doc,
     ...checkDate(doc.name, doc.expires, { renewal: true })
@@ -195,10 +198,11 @@ function splitAssignments(db, b, staffIds, totalHours, rateOverride) {
   }));
 }
 
-function staffEarnings(s) {
+function staffEarnings(s, range = {}) {
   const db = getDb();
+  const inRange = d => (!range.from || d >= range.from) && (!range.to || d <= range.to);
   const done = db.bookings.filter(b =>
-    b.status === 'completed' && assignmentsFor(db, b).some(a => a.staffId === s.id)
+    b.status === 'completed' && inRange(b.date) && assignmentsFor(db, b).some(a => a.staffId === s.id)
   );
 
   let jobHours = 0, earned = 0;
@@ -211,12 +215,12 @@ function staffEarnings(s) {
   }
 
   // Hours the office adds by hand, for anything agreed outside the portal
-  const extras = (db.timesheets || []).filter(t => t.staffId === s.id);
+  const extras = (db.timesheets || []).filter(t => t.staffId === s.id && inRange(t.date));
   const extraHours = extras.reduce((t, e) => t + (+e.hours || 0), 0);
   const extraPay = extras.reduce((t, e) =>
     t + (+e.hours || 0) * (e.rate != null ? +e.rate : defaultRateFor(db, s.id, e.date)), 0);
 
-  const paid = round2((db.payouts || []).filter(p => p.staffId === s.id).reduce((t, p) => t + p.amount, 0));
+  const paid = round2((db.payouts || []).filter(p => p.staffId === s.id && inRange(p.date)).reduce((t, p) => t + p.amount, 0));
   const total = round2(earned + extraPay);
   return {
     jobsDone: done.length,
@@ -624,6 +628,30 @@ app.post('/api/admin/email/test', requireRole('admin'), async (req, res) => {
   }
 });
 
+// Guesty keeps access details in three places, so they are gathered up once and
+// written onto each reservation before it becomes a changeover.
+async function attachAccessNotes(db, listings, reservations) {
+  try {
+    const live = reservations.filter(r => r.guestyId && r.listingId);
+    if (!live.length) return;
+    const notes = await fetchReservationNotes(live.map(r => r.guestyId));
+    const propertyCache = {};
+    for (const r of live) {
+      if (!(r.listingId in propertyCache)) {
+        propertyCache[r.listingId] = await fetchPropertyNotes(r.listingId);
+      }
+      r.accessNote = buildAccessNote({
+        listing: listings.find(l => l.guestyId === r.listingId),
+        reservationNotes: notes[r.guestyId],
+        propertyNotes: propertyCache[r.listingId]
+      });
+    }
+  } catch (e) {
+    // Notes are a nicety. Never let them stop a changeover being created.
+    console.error('Could not read Guesty notes:', e.message);
+  }
+}
+
 // ---------- Instant updates from Guesty (webhooks) ----------
 // Guesty posts here the moment a reservation is made or changed, so a changeover
 // appears in the portal in seconds instead of waiting for the hourly sync.
@@ -777,6 +805,7 @@ app.post('/api/admin/guesty/sync', requireRole('admin', 'office'), async (req, r
     const to = new Date(Date.now() + days * 864e5).toISOString().slice(0, 10);
     const [listings, reservations] = await Promise.all([fetchListings(), fetchReservations({ from, to })]);
     cacheListings(listings);   // so an instant update can stand on its own
+    await attachAccessNotes(db, listings, reservations);
     const result = importReservations({ listings, reservations });
     db.settings.guestyLastSync = new Date().toISOString();
     logAction('synced Guesty', `${result.created.length} changeover(s) imported`, req);
@@ -1009,12 +1038,64 @@ function expandInvoice(inv) {
 
 app.get('/api/admin/invoices', requireRole('admin', 'office'), (req, res) => {
   const db = getDb();
-  const rows = (db.invoices || []).map(expandInvoice);
+  const { clientId, from, to, status } = req.query;
+  let rows = (db.invoices || []).map(expandInvoice);
+  if (clientId) rows = rows.filter(r => r.clientId === +clientId);
+  if (from) rows = rows.filter(r => (r.issuedDate || '') >= from);
+  if (to) rows = rows.filter(r => (r.issuedDate || '') <= to);
+  if (status === 'unpaid') rows = rows.filter(r => r.status === 'unpaid');
+  if (status === 'paid') rows = rows.filter(r => r.status === 'paid');
+  if (status === 'chasing') rows = rows.filter(r => r.needsChasing);
+
   res.json({
     invoices: rows.sort((a, b) => (b.issuedDate || '').localeCompare(a.issuedDate || '')),
+    total: round2(rows.reduce((t, r) => t + r.amount, 0)),
     outstanding: round2(rows.filter(r => r.status === 'unpaid').reduce((t, r) => t + r.amount, 0)),
     overdue: round2(rows.filter(r => r.needsChasing).reduce((t, r) => t + r.amount, 0)),
-    chasing: rows.filter(r => r.needsChasing).length
+    chasing: rows.filter(r => r.needsChasing).length,
+    clients: db.clients.map(c => ({ id: c.id, name: c.name })).sort((a, b) => a.name.localeCompare(b.name))
+  });
+});
+
+// A printable invoice. Returns the pieces, and the browser turns it into a PDF
+// through its own print dialogue, which keeps this dependency free.
+app.get('/api/admin/invoices/print', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const { clientId, from, to, ids } = req.query;
+  let rows = (db.invoices || []).map(expandInvoice);
+  if (ids) {
+    const want = new Set(String(ids).split(',').map(Number));
+    rows = rows.filter(r => want.has(r.id));
+  } else {
+    if (clientId) rows = rows.filter(r => r.clientId === +clientId);
+    if (from) rows = rows.filter(r => (r.issuedDate || '') >= from);
+    if (to) rows = rows.filter(r => (r.issuedDate || '') <= to);
+  }
+
+  const out = rows.map(r => {
+    const c = db.clients.find(x => x.id === r.clientId);
+    const b = (db.bookings || []).find(x => x.id === r.bookingId);
+    return {
+      ...r,
+      client: c ? { name: c.name, address: c.address, postcode: c.postcode, email: c.email, phone: c.phone } : null,
+      // Bulk runs are split by property, which for Klea means the address
+      property: c?.address || c?.postcode || 'Unknown address',
+      job: b ? {
+        date: b.date, start: b.start,
+        service: SERVICES.find(x => x.id === b.serviceId)?.name || 'Clean',
+        hours: allocatedHoursFor(b)
+      } : null
+    };
+  }).sort((a, b) => a.property.localeCompare(b.property) || (a.issuedDate || '').localeCompare(b.issuedDate || ''));
+
+  res.json({
+    business: {
+      name: 'Klea Home', email: db.settings.email?.from || 'hello@kleahome.co.uk',
+      web: 'kleahome.co.uk'
+    },
+    invoices: out,
+    total: round2(out.reduce((t, r) => t + r.amount, 0)),
+    properties: [...new Set(out.map(r => r.property))]
   });
 });
 
@@ -1183,6 +1264,36 @@ app.get('/api/availability', (req, res) => {
   res.json({ date, options: staffOptions({ date, postcode, durationMins: parseInt(duration, 10) }) });
 });
 
+// Every booking raises an invoice straight away, so the office never has to
+// remember to create one. Guesty changeovers are billed to the property owner
+// the same as anything else.
+function raiseInvoiceFor(db, booking, { terms = 14 } = {}) {
+  if (!booking || booking.price <= 0) return null;
+  if ((db.invoices || []).some(i => i.bookingId === booking.id)) return null;
+  db.invoices = db.invoices || [];
+  const issued = new Date().toISOString().slice(0, 10);
+  const due = new Date(Date.now() + terms * 864e5).toISOString().slice(0, 10);
+  const c = db.clients.find(x => x.id === booking.clientId);
+  const svc = SERVICES.find(x => x.id === booking.serviceId)?.name || 'Clean';
+  const inv = {
+    id: nextId('invoices'), clientId: booking.clientId, bookingId: booking.id,
+    number: `INV-${String(nextInvoiceNumber(db)).padStart(4, '0')}`,
+    amount: round2(booking.price), issuedDate: issued, dueDate: due,
+    status: 'unpaid', paidDate: null, file: null,
+    notes: `${svc} at ${c?.address || c?.postcode || 'the property'} on ${booking.date}`,
+    autoRaised: true
+  };
+  db.invoices.push(inv);
+  return inv;
+}
+
+function nextInvoiceNumber(db) {
+  const nums = (db.invoices || [])
+    .map(i => /^INV-(\d+)$/.exec(i.number || ''))
+    .filter(Boolean).map(m => +m[1]);
+  return (nums.length ? Math.max(...nums) : 0) + 1;
+}
+
 // ---------- Booking creation (client side) ----------
 app.post('/api/bookings', async (req, res) => {
   const db = getDb();
@@ -1286,6 +1397,8 @@ app.post('/api/bookings', async (req, res) => {
     body
   });
 
+  save();
+  if (!takingCard) for (const b of created) raiseInvoiceFor(db, b);
   save();
   res.status(201).json({ bookings: created, client: c, quote: q, staffName, confirmationMessage: body, checkoutUrl });
 });
@@ -1412,6 +1525,7 @@ app.post('/api/admin/bookings', requireRole('admin', 'office'), (req, res) => {
     subject: `Your clean is booked for ${created[0].date}`,
     body: `Hi ${c.name.split(' ')[0]}, your ${svcName.toLowerCase()} is booked for ${created[0].date} at ${time}. ${staffName} will be looking after you. Klea ✦`
   });
+  for (const b of created) raiseInvoiceFor(db, b);
   logAction('added a booking', `${c.name}, ${created[0].date} ${time}`, req);
   save();
   res.status(201).json({ bookings: created.map(expandBooking) });
@@ -1854,6 +1968,72 @@ app.post('/api/cleaner/:id/jobs/:bookingId/response', requireRole('admin', 'offi
   res.json({ ok: true, response: answer });
 });
 
+// ---------- Company paperwork: insurance, ICO, anything the business holds ----------
+app.get('/api/admin/company-documents', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  res.json((db.settings.companyLegal || []).map(d => ({
+    id: d.id, name: d.name, expires: d.expires || null,
+    hasFile: !!d.dataUrl, uploadedAt: d.uploadedAt || null,
+    ...checkDate(d.name, d.expires, { renewal: true })
+  })));
+});
+
+app.post('/api/admin/company-documents', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const { name, expires = '', dataUrl } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'Give the document a name.' });
+  if (dataUrl && !/^data:(image\/|application\/pdf)/.test(dataUrl)) {
+    return res.status(400).json({ error: 'Upload a PDF or an image.' });
+  }
+  if (dataUrl && dataUrl.length > 4_000_000) {
+    return res.status(400).json({ error: 'That file is too big. Please use a smaller scan.' });
+  }
+  db.settings.companyLegal = db.settings.companyLegal || [];
+  const id = db.settings.companyLegal.reduce((m, d) => Math.max(m, d.id || 0), 0) + 1;
+  db.settings.companyLegal.push({
+    id, name: name.trim(), expires: expires || '',
+    dataUrl: dataUrl || null, uploadedAt: dataUrl ? new Date().toISOString() : null
+  });
+  logAction('added a company document', name.trim(), req);
+  save();
+  res.status(201).json({ ok: true, id });
+});
+
+app.get('/api/admin/company-documents/:id', requireRole('admin', 'office'), (req, res) => {
+  const d = (getDb().settings.companyLegal || []).find(x => x.id === +req.params.id);
+  if (!d || !d.dataUrl) return res.status(404).json({ error: 'No file on this one.' });
+  res.json({ id: d.id, name: d.name, dataUrl: d.dataUrl });
+});
+
+app.patch('/api/admin/company-documents/:id', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const d = (db.settings.companyLegal || []).find(x => x.id === +req.params.id);
+  if (!d) return res.status(404).json({ error: 'Not found' });
+  const { name, expires, dataUrl } = req.body;
+  if (name !== undefined) d.name = name.trim();
+  if (expires !== undefined) d.expires = expires;
+  if (dataUrl) {
+    if (!/^data:(image\/|application\/pdf)/.test(dataUrl)) return res.status(400).json({ error: 'Upload a PDF or an image.' });
+    if (dataUrl.length > 4_000_000) return res.status(400).json({ error: 'That file is too big.' });
+    d.dataUrl = dataUrl;
+    d.uploadedAt = new Date().toISOString();
+  }
+  logAction('updated a company document', d.name, req);
+  save();
+  res.json({ ok: true });
+});
+
+app.delete('/api/admin/company-documents/:id', requireRole('admin'), (req, res) => {
+  const db = getDb();
+  const before = (db.settings.companyLegal || []).length;
+  const doc = (db.settings.companyLegal || []).find(x => x.id === +req.params.id);
+  db.settings.companyLegal = (db.settings.companyLegal || []).filter(x => x.id !== +req.params.id);
+  if (db.settings.companyLegal.length === before) return res.status(404).json({ error: 'Not found' });
+  logAction('removed a company document', doc?.name || '', req);
+  save();
+  res.json({ ok: true });
+});
+
 app.post('/api/staff/:id/documents', requireRole('admin', 'office', 'kleaner'), requireSelfOrOffice, (req, res) => {
   const db = getDb();
   const s = db.staff.find(x => x.id === +req.params.id);
@@ -2069,6 +2249,19 @@ app.post('/api/admin/inventory/:id/adjust', requireRole('admin', 'office'), (req
   res.json(item);
 });
 
+app.get('/api/admin/expenses', requireRole('admin', 'office'), (req, res) => {
+  const db = getDb();
+  const { from, to, category } = req.query;
+  let rows = (db.expenses || []);
+  if (from) rows = rows.filter(e => (e.date || '') >= from);
+  if (to) rows = rows.filter(e => (e.date || '') <= to);
+  if (category) rows = rows.filter(e => e.category === category);
+  res.json({
+    expenses: rows.slice().sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id - a.id),
+    total: round2(rows.reduce((t, e) => t + e.amount, 0))
+  });
+});
+
 app.post('/api/admin/expenses', requireRole('admin', 'office'), (req, res) => {
   const db = getDb();
   const { date, category = 'other', description = '', amount } = req.body;
@@ -2089,12 +2282,19 @@ app.delete('/api/admin/expenses/:id', requireRole('admin', 'office'), (req, res)
 // ---------- Payroll ----------
 app.get('/api/admin/payroll', requireRole('admin', 'office'), (req, res) => {
   const db = getDb();
+  const range = { from: req.query.from || null, to: req.query.to || null };
+  const only = req.query.staffId ? +req.query.staffId : null;
+  const inRange = d => (!range.from || d >= range.from) && (!range.to || d <= range.to);
+
   res.json({
-    staff: db.staff.filter(s => s.active).map(s => ({
-      staffId: s.id, name: s.name, photo: s.photo, colour: s.colour, rate: s.rate, weekendRate: s.weekendRate || null,
-      ...staffEarnings(s)
+    range,
+    staff: db.staff.filter(s => s.active).filter(s => !only || s.id === only).map(s => ({
+      staffId: s.id, name: s.name, photo: s.photo, colour: s.colour,
+      ...staffEarnings(s, range)
     })),
+    everyone: db.staff.filter(s => s.active).map(s => ({ id: s.id, name: s.name })),
     payouts: (db.payouts || [])
+      .filter(p => (!only || p.staffId === only) && inRange(p.date))
       .map(p => ({ ...p, staffName: db.staff.find(s => s.id === p.staffId)?.name }))
       .sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id)
   });
@@ -2247,10 +2447,14 @@ app.get('/api/admin/rota', requireRole('admin', 'office'), (req, res) => {
     d.setDate(d.getDate() + i);
     days.push(d.toISOString().slice(0, 10));
   }
+  const week = db.bookings.filter(b => days.includes(b.date) && b.status !== 'cancelled');
   res.json({
     days,
     staff: db.staff.filter(s => s.active),
-    bookings: db.bookings.filter(b => days.includes(b.date) && b.status !== 'cancelled' && b.status !== 'requested').map(expandBooking),
+    bookings: week.filter(b => b.status !== 'requested' && assignmentsFor(db, b).length).map(expandBooking),
+    // Anything nobody is on yet, including jobs a Kleaner has turned down
+    unassigned: week.filter(b => !assignmentsFor(db, b).length).map(expandBooking),
+    awaitingApproval: week.filter(b => b.status === 'requested' && assignmentsFor(db, b).length).map(expandBooking),
     absences: (db.absences || []).filter(a => a.from <= days[6] && a.to >= days[0])
   });
 });
@@ -2276,6 +2480,7 @@ async function runGuestySync() {
     const to = new Date(Date.now() + days * 864e5).toISOString().slice(0, 10);
     const [listings, reservations] = await Promise.all([fetchListings(), fetchReservations({ from: today, to })]);
     cacheListings(listings);   // so an instant update can stand on its own
+    await attachAccessNotes(db, listings, reservations);
     const result = importReservations({ listings, reservations });
     db.settings.guestyLastSync = new Date().toISOString();
     db.settings.guestyLastError = null;

@@ -81,7 +81,78 @@ export default function Admin({ page, user, onSignOut }) {
 }
 
 // ---------- Dashboard ----------
+// Every figure on the dashboard goes somewhere when you click it
+function Widget({ big, label, go, onClick }) {
+  const act = () => { if (onClick) onClick(); else if (go) window.location.hash = go.replace(/^#/, ''); };
+  return (
+    <div className="stat" role="button" tabIndex={0} style={{ cursor: 'pointer' }}
+      onClick={act} onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); act(); } }}>
+      <div className="big">{big}</div>
+      <div className="lbl">{label} <span style={{ opacity: .45 }}>→</span></div>
+    </div>
+  );
+}
+
+// What "taken this month" is actually made of, so the figure can be checked
+function RevenueBreakdown({ onClose }) {
+  const [data, setData] = useState(null);
+  const [from, setFrom] = useState(() => new Date().toISOString().slice(0, 8) + '01');
+  const [to, setTo] = useState(() => new Date().toISOString().slice(0, 10));
+  useEffect(() => { api.get(`/api/admin/revenue?from=${from}&to=${to}`).then(setData); }, [from, to]);
+
+  return (
+    <>
+      <div className="drawer-back" onClick={onClose} />
+      <div className="drawer">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+          <div>
+            <h2 style={{ fontSize: 20 }}>Money taken</h2>
+            <p className="muted small">Card payments that went through, plus invoices marked paid.</p>
+          </div>
+          <button className="btn ghost small" onClick={onClose}>Close</button>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 12px', margin: '12px 0' }}>
+          <div className="field"><label>From</label><input type="date" value={from} onChange={e => setFrom(e.target.value)} /></div>
+          <div className="field"><label>To</label><input type="date" value={to} onChange={e => setTo(e.target.value)} /></div>
+        </div>
+
+        {!data ? <p className="muted">Loading…</p> : (
+          <>
+            <div className="stat-row" style={{ gridTemplateColumns: '1fr 1fr' }}>
+              <div className="stat"><div className="big">{gbp(data.total)}</div><div className="lbl">Taken</div></div>
+              <div className="stat"><div className="big" style={data.stillOwed > 0 ? { color: 'var(--bad)' } : {}}>{gbp(data.stillOwed)}</div><div className="lbl">Still owed ({data.stillOwedCount})</div></div>
+            </div>
+            {data.rows.length === 0 && <p className="muted">Nothing came in during that period.</p>}
+            {data.rows.length > 0 && (
+              <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                <table className="tbl">
+                  <thead><tr><th>When</th><th>Client</th><th>What</th><th style={{ textAlign: 'right' }}>Amount</th></tr></thead>
+                  <tbody>
+                    {data.rows.map((r, i) => (
+                      <tr key={i} style={{ cursor: 'default' }}>
+                        <td>{niceDate(r.date)}</td>
+                        <td><b>{r.client}</b></td>
+                        <td className="small muted">{r.type}{r.ref ? ` · ${r.ref}` : ''}</td>
+                        <td style={{ textAlign: 'right' }}><b>{gbp(r.amount)}</b></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <p className="small muted" style={{ marginTop: 10 }}>
+              A booking raises its invoice straight away, so anything unpaid shows as still owed until you mark it paid on the Invoices page.
+            </p>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
 function Dashboard({ openBooking }) {
+  const [showRevenue, setShowRevenue] = useState(false);
   const [sum, setSum] = useState(null);
   useEffect(() => { api.get('/api/admin/summary').then(setSum); }, []);
   if (!sum) return <p className="muted">Loading…</p>;
@@ -90,14 +161,15 @@ function Dashboard({ openBooking }) {
       <h1>Dashboard</h1>
       <p className="muted">Today at a glance</p>
       <div className="stat-row">
-        <div className="stat"><div className="big">{sum.todayJobs.length}</div><div className="lbl">Cleans today</div></div>
-        <div className="stat"><div className="big">{sum.upcomingCount}</div><div className="lbl">Booked next 7 days</div></div>
-        <div className="stat"><div className="big">{sum.clients}</div><div className="lbl">Clients</div></div>
-        <div className="stat"><div className="big">{sum.subscriptions}</div><div className="lbl">Active subscriptions</div></div>
-        <div className="stat"><div className="big">{gbp(sum.revenueMonth)}</div><div className="lbl">Taken this month</div></div>
-        <div className="stat"><div className="big">{gbp(sum.revenueBookedAhead)}</div><div className="lbl">Booked ahead</div></div>
-        {sum.avgRating && <div className="stat"><div className="big">{sum.avgRating}<span style={{ color: 'var(--ochre)' }}> ★</span></div><div className="lbl">Average clean rating</div></div>}
+        <Widget big={sum.todayJobs.length} label="Cleans today" go="#/admin/bookings?when=today" />
+        <Widget big={sum.upcomingCount} label="Booked next 7 days" go="#/admin/bookings?when=week" />
+        <Widget big={sum.clients} label="Clients" go="#/admin/clients" />
+        <Widget big={sum.subscriptions} label="Active subscriptions" go="#/admin/clients?only=repeat" />
+        <Widget big={gbp(sum.revenueMonth)} label="Taken this month" onClick={() => setShowRevenue(true)} />
+        <Widget big={gbp(sum.revenueBookedAhead)} label="Booked ahead" go="#/admin/bookings?when=ahead" />
+        {sum.avgRating && <Widget big={<>{sum.avgRating}<span style={{ color: 'var(--ochre)' }}> ★</span></>} label="Average clean rating" go="#/admin/reports" />}
       </div>
+      {showRevenue && <RevenueBreakdown onClose={() => setShowRevenue(false)} />}
       {sum.invoicesChasing > 0 && (
         <div className="demo-banner" style={{ borderColor: 'var(--bad)' }}>
           💷 <b>{sum.invoicesChasing} invoice{sum.invoicesChasing > 1 ? 's' : ''} overdue, {gbp(sum.invoicesChasingTotal)} to chase</b>
@@ -151,6 +223,91 @@ function Dashboard({ openBooking }) {
 }
 
 // ---------- Rota ----------
+// The rota as a spreadsheet or a printable sheet, for whoever is being sent it.
+function exportRota(data, only, how) {
+  const staff = data.staff.filter(s => only === 'all' || s.id === +only);
+  const rows = [];
+  for (const s of staff) {
+    for (const d of data.days) {
+      const jobs = data.bookings.filter(b => b.staffId === s.id && b.date === d)
+        .sort((a, b) => a.start.localeCompare(b.start));
+      for (const b of jobs) {
+        rows.push({
+          kleaner: s.name, date: d, start: b.start,
+          hours: b.allocatedHours != null ? b.allocatedHours : Math.round(b.durationMins / 60 * 100) / 100,
+          client: b.clientName, address: b.clientAddress || '', postcode: b.clientPostcode || '',
+          service: b.serviceName, notes: b.notes || ''
+        });
+      }
+    }
+  }
+  if (!rows.length) { alert('Nothing on the rota for that week.'); return; }
+
+  const who = only === 'all' ? 'All Kleaners' : (staff[0]?.name || 'Kleaner');
+  const title = `Klea rota · ${who} · week of ${data.days[0]}`;
+
+  if (how === 'csv') {
+    const cell = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const csv = ['Kleaner,Date,Start,Hours,Client,Address,Postcode,Service,Notes']
+      .concat(rows.map(r => [r.kleaner, r.date, r.start, r.hours, r.client, r.address, r.postcode, r.service, r.notes].map(cell).join(',')))
+      .join('\r\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `klea-rota-${only === 'all' ? 'all' : (staff[0]?.name || 'kleaner').toLowerCase().replace(/\W+/g, '-')}-${data.days[0]}.csv`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    return;
+  }
+
+  const esc = t => String(t ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const day = d => new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+  const byKleaner = {};
+  for (const r of rows) (byKleaner[r.kleaner] = byKleaner[r.kleaner] || []).push(r);
+
+  const body = Object.entries(byKleaner).map(([name, list]) => {
+    const byDay = {};
+    for (const r of list) (byDay[r.date] = byDay[r.date] || []).push(r);
+    const total = Math.round(list.reduce((t, r) => t + (+r.hours || 0), 0) * 10) / 10;
+    return `<section>
+      <h2>${esc(name)} <span class="tot">${list.length} job${list.length === 1 ? '' : 's'} · ${total}h</span></h2>
+      ${Object.entries(byDay).map(([d, js]) => `
+        <h3>${esc(day(d))}</h3>
+        <table><tbody>
+          ${js.map(r => `<tr>
+            <td class="t">${esc(r.start)}</td>
+            <td><b>${esc(r.client)}</b><div class="sub">${esc([r.address, r.postcode].filter(Boolean).join(', '))}</div>
+              ${r.notes ? `<div class="note">${esc(r.notes)}</div>` : ''}</td>
+            <td class="h">${esc(r.hours)}h</td>
+          </tr>`).join('')}
+        </tbody></table>`).join('')}
+    </section>`;
+  }).join('');
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(title)}</title><style>
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#2E2721;margin:0;padding:26px;max-width:820px}
+    h1{font-size:22px;margin:0 0 2px}
+    .when{color:#8B7F70;font-size:13px;margin:0 0 20px}
+    section{page-break-inside:avoid;margin-bottom:26px}
+    h2{font-size:17px;border-bottom:2px solid #2E2721;padding-bottom:6px;margin:0 0 4px;display:flex;justify-content:space-between;align-items:baseline}
+    .tot{font-size:12px;color:#8B7F70;font-weight:400}
+    h3{font-size:12px;text-transform:uppercase;letter-spacing:.07em;color:#8B7F70;margin:14px 0 4px}
+    table{width:100%;border-collapse:collapse;font-size:14px}
+    td{padding:8px 0;border-bottom:1px solid #F0E7D9;vertical-align:top}
+    .t{width:58px;font-weight:700;white-space:nowrap}
+    .h{width:52px;text-align:right;color:#8B7F70;white-space:nowrap}
+    .sub{color:#8B7F70;font-size:12.5px;margin-top:2px}
+    .note{font-size:12.5px;margin-top:4px}
+  </style></head><body>
+    <h1>${esc(who)}</h1><p class="when">Week of ${esc(day(data.days[0]))}</p>${body}
+  </body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { alert('Your browser blocked the print window. Allow pop-ups and try again.'); return; }
+  w.document.write(html); w.document.close(); w.focus();
+  setTimeout(() => w.print(), 400);
+}
+
 function Rota({ openBooking, openNewBooking }) {
   const [start, setStart] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // Monday
@@ -159,6 +316,7 @@ function Rota({ openBooking, openNewBooking }) {
   const [data, setData] = useState(null);
   const [only, setOnly] = useState('all');
   const [timeOff, setTimeOff] = useState(false);
+  const [dragging, setDragging] = useState(null);
   const load = () => api.get('/api/admin/rota?start=' + start).then(setData);
   useEffect(() => { load(); }, [start]);
 
@@ -181,12 +339,33 @@ function Rota({ openBooking, openNewBooking }) {
           </select>
           <button className="btn ghost small" onClick={() => shift(-1)}>← Prev</button>
           <button className="btn ghost small" onClick={() => shift(1)}>Next →</button>
+          <button className="btn ghost small" onClick={() => exportRota(data, only, 'csv')}>CSV</button>
+          <button className="btn ghost small" onClick={() => exportRota(data, only, 'print')}>Print / PDF</button>
           <button className={'btn small ' + (timeOff ? 'gold' : 'ghost')} onClick={() => setTimeOff(t => !t)}>
             {timeOff ? 'Close' : '🌴 Time off'}
           </button>
         </div>
       </div>
       {timeOff && <TimeOff staff={data.staff} absences={data.absences || []} onChanged={load} />}
+
+      {(data.unassigned?.length > 0) && (
+        <div className="card" style={{ marginBottom: 14, borderColor: 'var(--warn)' }}>
+          <b>Nobody on these yet {data.unassigned.length > 0 && <span className="chip bad">{data.unassigned.length}</span>}</b>
+          <p className="small muted" style={{ margin: '4px 0 10px' }}>
+            Drag one onto a Kleaner's day to give it to them, or click it to open the job.
+          </p>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {data.unassigned.map(b => (
+              <div key={b.id} className="rota-job" draggable
+                onDragStart={() => setDragging(b.id)} onDragEnd={() => setDragging(null)}
+                onClick={() => openBooking(b.id)}
+                style={{ background: 'var(--warn)', color: '#fff', cursor: 'grab', padding: '6px 10px' }}>
+                {niceDate(b.date)} {b.start} · {b.clientName} · {b.clientPostcode?.split(' ')[0]}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="rota">
         <div className="rota-grid">
@@ -212,10 +391,24 @@ function Rota({ openBooking, openNewBooking }) {
                     ))}
                   </div>
                 );
+                const drop = async e => {
+                  e.preventDefault();
+                  if (!dragging) return;
+                  const id = dragging; setDragging(null);
+                  try { await api.patch('/api/admin/bookings/' + id, { staffIds: [s.id], date: d }); await load(); }
+                  catch (err) { alert(err.message); }
+                };
                 return (
-                  <div key={d} className="rota-cell" style={!working ? { background: 'var(--surface2)', opacity: 0.55 } : {}}>
+                  <div key={d} className="rota-cell"
+                    onDragOver={e => { if (dragging) e.preventDefault(); }} onDrop={drop}
+                    style={{
+                      ...(!working ? { background: 'var(--surface2)', opacity: 0.55 } : {}),
+                      ...(dragging ? { outline: '2px dashed var(--line)', outlineOffset: -3 } : {})
+                    }}>
                     {jobs.map(b => (
-                      <div key={b.id} className="rota-job" style={{ background: s.colour }} onClick={() => openBooking(b.id)}>
+                      <div key={b.id} className="rota-job" style={{ background: s.colour }} draggable
+                        onDragStart={() => setDragging(b.id)} onDragEnd={() => setDragging(null)}
+                        onClick={() => openBooking(b.id)}>
                         {b.start} {b.clientName.split(' ')[0]} · {b.clientPostcode?.split(' ')[0]}
                       </div>
                     ))}
@@ -241,16 +434,33 @@ function Rota({ openBooking, openNewBooking }) {
 // ---------- Bookings ----------
 function Bookings({ openBooking, openNewBooking }) {
   const [rows, setRows] = useState(null);
-  const [filter, setFilter] = useState('upcoming');
   const [settings, setSettings] = useState(null);
+  const [clients, setClients] = useState([]);
+  // The dashboard links straight in with a period already chosen
+  const asked = new URLSearchParams((window.location.hash.split('?')[1] || ''));
+  const [filter, setFilter] = useState(asked.get('when') === 'today' ? 'today'
+    : asked.get('when') === 'ahead' ? 'upcoming' : asked.get('when') === 'week' ? 'week' : 'upcoming');
+  const [who, setWho] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
+
   const load = () => api.get('/api/admin/bookings').then(setRows);
-  useEffect(() => { load(); api.get('/api/admin/settings').then(setSettings); }, []);
+  useEffect(() => { load(); api.get('/api/admin/settings').then(setSettings); api.get('/api/admin/clients').then(setClients); }, []);
   if (!rows) return <p className="muted">Loading…</p>;
   const today = new Date().toISOString().slice(0, 10);
-  const shown = rows.filter(b =>
-    filter === 'upcoming' ? b.date >= today && b.status !== 'cancelled'
-      : filter === 'past' ? b.date < today
-        : true);
+  const weekEnd = new Date(Date.now() + 7 * 864e5).toISOString().slice(0, 10);
+
+  const shown = rows.filter(b => {
+    if (who && b.clientId !== +who) return false;
+    if (from && b.date < from) return false;
+    if (to && b.date > to) return false;
+    if (filter === 'today') return b.date === today && b.status !== 'cancelled';
+    if (filter === 'week') return b.date >= today && b.date <= weekEnd && b.status !== 'cancelled';
+    if (filter === 'upcoming') return b.date >= today && b.status !== 'cancelled';
+    if (filter === 'past') return b.date < today;
+    return true;
+  });
+  const filtered = who || from || to;
 
   const setMode = mode => api.post('/api/admin/settings', { bookingMode: mode }).then(setSettings);
   const approve = (e, b) => {
@@ -264,10 +474,28 @@ function Bookings({ openBooking, openNewBooking }) {
         <h1>Bookings</h1>
         <button className="btn gold small" onClick={openNewBooking}>+ Add booking</button>
       </div>
+      <div className="card" style={{ margin: '14px 0' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0 12px' }}>
+          <div className="field" style={{ marginBottom: 8 }}><label>Client</label>
+            <select value={who} onChange={e => setWho(e.target.value)}>
+              <option value="">All clients</option>
+              {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 8 }}><label>From</label>
+            <input type="date" value={from} onChange={e => setFrom(e.target.value)} /></div>
+          <div className="field" style={{ marginBottom: 8 }}><label>To</label>
+            <input type="date" value={to} onChange={e => setTo(e.target.value)} /></div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          {[['today', 'Today'], ['week', 'Next 7 days'], ['upcoming', 'Upcoming'], ['past', 'Past'], ['all', 'All']].map(([f, label]) => (
+            <button key={f} className={'btn small ' + (filter === f ? 'gold' : 'ghost')} onClick={() => setFilter(f)}>{label}</button>
+          ))}
+          {filtered && <button className="btn ghost small" onClick={() => { setWho(''); setFrom(''); setTo(''); }}>Clear</button>}
+          <span className="small muted">{shown.length} booking{shown.length === 1 ? '' : 's'}</span>
+        </div>
+      </div>
       <div style={{ display: 'flex', gap: 8, margin: '14px 0', alignItems: 'center', flexWrap: 'wrap' }}>
-        {['upcoming', 'past', 'all'].map(f => (
-          <button key={f} className={'btn small ' + (filter === f ? 'gold' : 'ghost')} onClick={() => setFilter(f)} style={{ textTransform: 'capitalize' }}>{f}</button>
-        ))}
         {settings && (
           <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
             <span className="small muted">New website bookings:</span>
@@ -326,6 +554,112 @@ function resizeToDataUrl(file, maxPx = 900) {
   });
 }
 
+// Everything about a job that the office needs to change after it is booked:
+// the date, who is on it, how long it is worth and what they get paid for it.
+function JobSheet({ b, staff, onSaved }) {
+  const [f, setF] = useState(() => ({
+    date: b.date, start: b.start, notes: b.notes || '',
+    allocatedHours: b.allocatedHours != null ? b.allocatedHours : Math.round(b.durationMins / 60 * 100) / 100,
+    payRate: b.assignments?.[0]?.rate ?? b.payRate ?? '',
+    staffIds: (b.assignments?.length ? b.assignments.map(a => a.staffId) : (b.staffId ? [b.staffId] : [])),
+    price: b.price
+  }));
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const dirty = f.date !== b.date || f.start !== b.start || (f.notes || '') !== (b.notes || '')
+    || String(f.price) !== String(b.price)
+    || String(f.allocatedHours) !== String(b.allocatedHours != null ? b.allocatedHours : Math.round(b.durationMins / 60 * 100) / 100)
+    || String(f.payRate) !== String(b.assignments?.[0]?.rate ?? b.payRate ?? '')
+    || f.staffIds.join(',') !== (b.assignments?.length ? b.assignments.map(a => a.staffId) : (b.staffId ? [b.staffId] : [])).join(',');
+
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const updated = await api.patch('/api/admin/bookings/' + b.id, {
+        date: f.date, start: f.start, notes: f.notes,
+        allocatedHours: +f.allocatedHours,
+        payRate: f.payRate === '' ? undefined : +f.payRate,
+        price: +f.price,
+        staffIds: f.staffIds.map(Number)
+      });
+      onSaved(updated);
+      setMsg({ ok: true, text: 'Saved.' });
+      setTimeout(() => setMsg(null), 3000);
+    } catch (e) { setMsg({ ok: false, text: e.message }); }
+    setBusy(false);
+  };
+
+  const toggleStaff = id => setF(x => ({
+    ...x,
+    staffIds: x.staffIds.includes(id) ? x.staffIds.filter(i => i !== id) : [...x.staffIds, id]
+  }));
+
+  const hours = +f.allocatedHours || 0;
+  const rate = f.payRate === '' ? null : +f.payRate;
+  const each = f.staffIds.length ? Math.round(hours / f.staffIds.length * 100) / 100 : 0;
+  const wageBill = rate != null ? Math.round(hours * rate * 100) / 100 : null;
+
+  return (
+    <div className="card" style={{ margin: '16px 0' }}>
+      <b>Job sheet</b>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0 12px', marginTop: 10 }}>
+        <div className="field"><label>Date</label>
+          <input type="date" value={f.date} onChange={e => setF({ ...f, date: e.target.value })} /></div>
+        <div className="field"><label>Start</label>
+          <input type="time" value={f.start} onChange={e => setF({ ...f, start: e.target.value })} /></div>
+        <div className="field"><label>Hours allocated</label>
+          <input type="number" step="0.25" min="0" value={f.allocatedHours}
+            onChange={e => setF({ ...f, allocatedHours: e.target.value })} /></div>
+        <div className="field"><label>Kleaner pay, per hour</label>
+          <input type="number" step="0.25" min="0" placeholder="e.g. 14.50" value={f.payRate}
+            onChange={e => setF({ ...f, payRate: e.target.value })} /></div>
+        <div className="field"><label>Client price</label>
+          <input type="number" step="0.01" min="0" value={f.price}
+            onChange={e => setF({ ...f, price: e.target.value })} /></div>
+      </div>
+
+      <div className="field" style={{ marginTop: 2 }}>
+        <label>Who is on it {f.staffIds.length > 1 && <span className="chip">shared, {each}h each</span>}</label>
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+          {staff.map(s => (
+            <button key={s.id} type="button"
+              className={'btn small ' + (f.staffIds.includes(s.id) ? 'gold' : 'ghost')}
+              onClick={() => toggleStaff(s.id)}>{s.name}</button>
+          ))}
+        </div>
+        <p className="small muted" style={{ marginTop: 6, marginBottom: 0 }}>
+          Pick more than one and the hours split between them. Leave nobody picked and it goes back on the unassigned list.
+        </p>
+      </div>
+
+      <div className="field"><label>Notes for the Kleaner</label>
+        <textarea rows="2" value={f.notes} placeholder="Access, parking, pets, anything they need to know"
+          onChange={e => setF({ ...f, notes: e.target.value })} /></div>
+
+      {wageBill != null && (
+        <p className="small muted" style={{ marginTop: 0 }}>
+          Wage cost for this job: <b>{gbp(wageBill)}</b>{f.staffIds.length > 1 ? ` across ${f.staffIds.length} Kleaners` : ''}
+          {f.price > 0 && <> · leaves <b>{gbp(Math.round((f.price - wageBill) * 100) / 100)}</b> before materials</>}
+        </p>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 6 }}>
+        <button className="btn gold small" disabled={busy || !dirty} onClick={save}>
+          {busy ? 'Saving…' : dirty ? 'Save changes' : 'Saved'}
+        </button>
+        <select style={{ padding: '8px 12px', borderRadius: 10, border: '1.5px solid var(--line)', background: 'var(--bg)' }}
+          value={b.status} onChange={e => api.patch('/api/admin/bookings/' + b.id, { status: e.target.value }).then(onSaved)}>
+          {['requested', 'booked', 'in_progress', 'completed', 'cancelled'].map(s =>
+            <option key={s} value={s}>{s === 'booked' && b.status === 'requested' ? 'booked (approve)' : s.replace('_', ' ')}</option>)}
+        </select>
+      </div>
+
+      {msg && <p className="small" style={{ marginTop: 8, color: msg.ok ? 'var(--good)' : 'var(--bad)' }}>{msg.ok ? '✓ ' : ''}{msg.text}</p>}
+    </div>
+  );
+}
+
 function BookingDrawer({ id, onClose }) {
   const [b, setB] = useState(null);
   const [staff, setStaff] = useState([]);
@@ -367,7 +701,7 @@ function BookingDrawer({ id, onClose }) {
           <div>
             <h2 style={{ fontSize: 20 }}>{b.serviceName} <span className="chip" style={{ verticalAlign: 'middle' }}>{b.sizeLabel}</span></h2>
             <p className="muted small">
-              {niceDate(b.date)} at {b.start} · approx {Math.round(b.durationMins / 60 * 10) / 10}h · {gbp(b.price)}{b.seriesId ? ' per visit' : ''}
+              {niceDate(b.date)} at {b.start} · {b.allocatedHours != null ? b.allocatedHours : Math.round(b.durationMins / 60 * 10) / 10}h · {gbp(b.price)}{b.seriesId ? ' per visit' : ''}
               {b.teamClean && <span className="chip" style={{ marginLeft: 8 }}>Team ×2</span>}
               {b.recleanOf && <span className="chip warn" style={{ marginLeft: 8 }}>Free re-clean</span>}
             </p>
@@ -388,16 +722,7 @@ function BookingDrawer({ id, onClose }) {
           {b.addonNames.length > 0 && <div style={{ marginTop: 8, display: 'flex', gap: 6, flexWrap: 'wrap' }}>{b.addonNames.map(a => <span key={a} className="chip">{a}</span>)}</div>}
         </div>
 
-        <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
-          <select className="field" style={{ padding: '8px 12px', borderRadius: 10, border: '1.5px solid var(--line)', background: 'var(--bg)' }}
-            value={b.staffId} onChange={e => update({ staffId: +e.target.value })}>
-            {staff.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-          <select style={{ padding: '8px 12px', borderRadius: 10, border: '1.5px solid var(--line)', background: 'var(--bg)' }}
-            value={b.status} onChange={e => update({ status: e.target.value })}>
-            {['requested', 'booked', 'in_progress', 'completed', 'cancelled'].map(s => <option key={s} value={s}>{s === 'booked' && b.status === 'requested' ? 'booked (approve)' : s.replace('_', ' ')}</option>)}
-          </select>
-        </div>
+        <JobSheet b={b} staff={staff} onSaved={setB} />
 
         <h3 style={{ fontSize: 15, marginBottom: 6 }}>Photos — {b.photoCount} on file</h3>
         <p className="small muted" style={{ marginBottom: 8 }}>Every clean is photographed. Upload finished-room photos before marking the clean complete.</p>
@@ -616,6 +941,115 @@ function ClientDrawer({ id, onClose }) {
 
 // ---------- Staff ----------
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+// The company's own paperwork: insurance, ICO registration, anything with a
+// renewal date. Each one can carry the actual certificate as a PDF.
+function CompanyDocuments({ onChanged }) {
+  const [docs, setDocs] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [f, setF] = useState({ name: '', expires: '', dataUrl: null, fileName: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = () => api.get('/api/admin/company-documents').then(setDocs);
+  useEffect(() => { load(); }, []);
+  if (!docs) return null;
+
+  const pick = file => {
+    if (!file) return;
+    if (file.size > 3_000_000) { setErr('That file is too big. Please use a smaller scan.'); return; }
+    const reader = new FileReader();
+    reader.onload = () => setF(x => ({ ...x, dataUrl: reader.result, fileName: file.name }));
+    reader.readAsDataURL(file);
+  };
+
+  const add = async () => {
+    setBusy(true); setErr('');
+    try {
+      await api.post('/api/admin/company-documents', f);
+      setF({ name: '', expires: '', dataUrl: null, fileName: '' });
+      setAdding(false);
+      await load(); onChanged?.();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const attach = async (doc, file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try { await api.patch('/api/admin/company-documents/' + doc.id, { dataUrl: reader.result }); await load(); }
+      catch (e) { alert(e.message); }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const view = async doc => {
+    try {
+      const full = await api.get('/api/admin/company-documents/' + doc.id);
+      const w = window.open();
+      if (w) w.document.write(`<iframe src="${full.dataUrl}" style="border:0;width:100%;height:100%"></iframe>`);
+    } catch (e) { alert(e.message); }
+  };
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', margin: '18px 0 8px' }}>
+        <h2 style={{ fontSize: 16, margin: 0 }}>Company documents</h2>
+        <button className="btn ghost small" onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Add document'}</button>
+      </div>
+
+      {adding && (
+        <div className="card" style={{ marginBottom: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '0 12px' }}>
+            <div className="field"><label>What it is</label>
+              <input value={f.name} placeholder="e.g. Public liability insurance"
+                onChange={e => setF({ ...f, name: e.target.value })} /></div>
+            <div className="field"><label>Renews on (optional)</label>
+              <input type="date" value={f.expires} onChange={e => setF({ ...f, expires: e.target.value })} /></div>
+          </div>
+          <label className="btn ghost small" style={{ display: 'inline-flex', marginBottom: 10 }}>
+            {f.fileName || 'Attach a PDF or photo'}
+            <input type="file" accept="application/pdf,image/*" style={{ display: 'none' }}
+              onChange={e => { pick(e.target.files[0]); e.target.value = ''; }} />
+          </label>
+          <div><button className="btn gold small" disabled={busy || !f.name} onClick={add}>{busy ? 'Saving…' : 'Save document'}</button></div>
+          {err && <p className="small" style={{ color: 'var(--bad)', marginTop: 8 }}>{err}</p>}
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 0, marginBottom: 8 }}>
+        <table className="tbl">
+          <tbody>
+            {docs.length === 0 && <tr><td className="muted" style={{ padding: 14 }}>Nothing on file yet.</td></tr>}
+            {docs.map(d => (
+              <tr key={d.id} style={{ cursor: 'default' }}>
+                <td><b>{d.name}</b><div className="small muted">{d.detail}</div></td>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  {d.expires && (
+                    <span className={stateChip(d.state)} style={{ marginRight: 8 }}>
+                      {d.state === 'ok' ? `Valid until ${d.expires}` : d.state === 'due-soon' ? `Renew soon · ${d.expires}` : `Overdue · ${d.expires}`}
+                    </span>
+                  )}
+                  {d.hasFile
+                    ? <button className="btn ghost small" onClick={() => view(d)}>View</button>
+                    : <label className="btn ghost small" style={{ display: 'inline-flex' }}>
+                        Attach file
+                        <input type="file" accept="application/pdf,image/*" style={{ display: 'none' }}
+                          onChange={e => { attach(d, e.target.files[0]); e.target.value = ''; }} />
+                      </label>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="small muted" style={{ marginBottom: 18 }}>
+        Employers' liability insurance is a legal requirement as soon as you employ anyone. New starters need a right to work check before their first shift.
+      </p>
+    </>
+  );
+}
+
 function Staff({ openStaff }) {
   const [data, setData] = useState(null);
   useEffect(() => { api.get('/api/admin/staff').then(setData); }, []);
@@ -630,24 +1064,7 @@ function Staff({ openStaff }) {
 
       <Applicants />
 
-      <h2 style={{ fontSize: 16, margin: '18px 0 8px' }}>Company legal documents</h2>
-      <div className="card" style={{ padding: 0, marginBottom: 8 }}>
-        <table className="tbl">
-          <tbody>
-            {data.companyLegal.map(d => (
-              <tr key={d.id} style={{ cursor: 'default' }}>
-                <td><b>{d.name}</b><div className="small muted">{d.detail}</div></td>
-                <td style={{ textAlign: 'right' }}>
-                  <span className={stateChip(d.state)}>
-                    {d.state === 'ok' ? `Valid until ${d.expires}` : d.state === 'due-soon' ? `Renew soon · ${d.expires}` : `Overdue · ${d.expires}`}
-                  </span>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="small muted" style={{ marginBottom: 18 }}>Employers' liability insurance is a legal requirement as soon as you employ anyone. New starters need a right to work check before their first shift.</p>
+      <CompanyDocuments onChanged={load} />
 
       <h2 style={{ fontSize: 16, margin: '4px 0 10px' }}>Cleaners</h2>
       <p className="small muted" style={{ marginBottom: 10 }}>Click a cleaner to open their full file: personal details, right to work, DBS, training, emergency contact and payroll details.</p>
@@ -658,7 +1075,7 @@ function Staff({ openStaff }) {
               <Avatar src={s.photo} name={s.name} size={52} />
               <div style={{ minWidth: 0 }}>
                 <b>{s.name}</b> {!s.active && <span className="status cancelled">inactive</span>}
-                <div className="small muted">{gbp(s.rate)}/hr · patch {s.postcode} · {s.phone}</div>
+                <div className="small muted">patch {s.postcode} · {s.phone}{s.hasCar ? ' · has a car' : ''}</div>
               </div>
             </div>
             {s.bio && <p className="small muted" style={{ fontStyle: 'italic', marginBottom: 8 }}>“{s.bio}”</p>}
@@ -690,11 +1107,21 @@ function Staff({ openStaff }) {
 function Payroll({ openPayrollDetail }) {
   const [data, setData] = useState(null);
   const [paying, setPaying] = useState(null);
-  const load = () => api.get('/api/admin/payroll').then(setData);
-  useEffect(() => { load(); }, []);
+  const [filter, setFilter] = useState({ from: '', to: '', staffId: '' });
+  const [adding, setAdding] = useState(null);
+
+  const load = () => {
+    const q = new URLSearchParams();
+    if (filter.from) q.set('from', filter.from);
+    if (filter.to) q.set('to', filter.to);
+    if (filter.staffId) q.set('staffId', filter.staffId);
+    return api.get('/api/admin/payroll' + (q.toString() ? '?' + q : '')).then(setData);
+  };
+  useEffect(() => { load(); }, [filter.from, filter.to, filter.staffId]);
   if (!data) return <p className="muted">Loading…</p>;
 
   const totalDue = data.staff.reduce((t, s) => t + s.due, 0);
+  const filtered = filter.from || filter.to || filter.staffId;
 
   const pay = async s => {
     setPaying(s.staffId);
@@ -706,26 +1133,52 @@ function Payroll({ openPayrollDetail }) {
   return (
     <>
       <h1>Payroll</h1>
-      <div className="demo-banner" style={{ marginTop: 12 }}>Demo mode — payouts are recorded here, no real bank transfer is made. Wages are hours on completed cleans plus logged extra time, at each cleaner's rate (weekend rate on Sat and Sun where set). Click a cleaner for their week-by-week breakdown.</div>
-      <div className="stat-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
-        <div className="stat"><div className="big">{gbp(totalDue)}</div><div className="lbl">Total wages due</div></div>
-        <div className="stat"><div className="big">{gbp(data.staff.reduce((t, s) => t + s.paid, 0))}</div><div className="lbl">Paid out to date</div></div>
-        <div className="stat"><div className="big">{Math.round(data.staff.reduce((t, s) => t + s.hours, 0))}h</div><div className="lbl">Hours worked (all time)</div></div>
+      <p className="muted" style={{ marginBottom: 14 }}>
+        Wages come from the hours allocated to each completed job, at the rate set on that job, plus anything you add by hand below. Click a Kleaner for their week by week breakdown.
+      </p>
+
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0 12px' }}>
+          <div className="field" style={{ marginBottom: 8 }}><label>Kleaner</label>
+            <select value={filter.staffId} onChange={e => setFilter({ ...filter, staffId: e.target.value })}>
+              <option value="">Everyone</option>
+              {data.everyone.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 8 }}><label>From</label>
+            <input type="date" value={filter.from} onChange={e => setFilter({ ...filter, from: e.target.value })} /></div>
+          <div className="field" style={{ marginBottom: 8 }}><label>To</label>
+            <input type="date" value={filter.to} onChange={e => setFilter({ ...filter, to: e.target.value })} /></div>
+        </div>
+        {filtered && (
+          <button className="btn ghost small" onClick={() => setFilter({ from: '', to: '', staffId: '' })}>Clear filters</button>
+        )}
       </div>
+
+      <div className="stat-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+        <div className="stat"><div className="big">{gbp(totalDue)}</div><div className="lbl">{filtered ? 'Wages due in this period' : 'Total wages due'}</div></div>
+        <div className="stat"><div className="big">{gbp(data.staff.reduce((t, s) => t + s.paid, 0))}</div><div className="lbl">Paid out</div></div>
+        <div className="stat"><div className="big">{Math.round(data.staff.reduce((t, s) => t + s.hours, 0) * 10) / 10}h</div><div className="lbl">Hours worked</div></div>
+      </div>
+
       <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 24 }}>
         <table className="tbl">
-          <thead><tr><th>Cleaner</th><th>Rate</th><th>Jobs done</th><th>Hours</th><th>Earned</th><th>Paid</th><th>Due</th><th /></tr></thead>
+          <thead><tr><th>Kleaner</th><th>Jobs</th><th>Job hours</th><th>Extra hours</th><th>Earned</th><th>Paid</th><th>Due</th><th /></tr></thead>
           <tbody>
             {data.staff.map(s => (
               <tr key={s.staffId} onClick={() => openPayrollDetail(s.staffId)}>
                 <td><div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><Avatar src={s.photo} name={s.name} size={34} /><b>{s.name}</b></div></td>
-                <td>{gbp(s.rate)}/hr{s.weekendRate ? <span className="small muted"> · {gbp(s.weekendRate)} wknd</span> : ''}</td>
                 <td>{s.jobsDone}</td>
-                <td>{s.hours}h</td>
+                <td>{s.jobHours}h</td>
+                <td>{s.extraHours ? <b>{s.extraHours}h</b> : <span className="muted">0h</span>}</td>
                 <td>{gbp(s.earned)}</td>
                 <td className="muted">{gbp(s.paid)}</td>
                 <td><b style={s.due > 0 ? { color: 'var(--beige-deep)' } : {}}>{gbp(s.due)}</b></td>
-                <td style={{ textAlign: 'right' }}>
+                <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                  <button className="btn ghost small" style={{ marginRight: 6 }}
+                    onClick={e => { e.stopPropagation(); setAdding(adding === s.staffId ? null : s.staffId); }}>
+                    + Hours
+                  </button>
                   <button className="btn gold small" disabled={s.due <= 0 || paying === s.staffId} onClick={e => { e.stopPropagation(); pay(s); }}>
                     {paying === s.staffId ? 'Paying…' : 'Pay now'}
                   </button>
@@ -735,7 +1188,12 @@ function Payroll({ openPayrollDetail }) {
           </tbody>
         </table>
       </div>
+
+      {adding && <AddHours staffId={adding} name={data.staff.find(s => s.staffId === adding)?.name}
+        onDone={() => { setAdding(null); load(); }} onCancel={() => setAdding(null)} />}
+
       <h2 style={{ fontSize: 16, marginBottom: 10 }}>Payout history</h2>
+      {data.payouts.length === 0 && <p className="muted">Nothing paid out in this period.</p>}
       {data.payouts.map(p => (
         <div key={p.id} className="msg" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div><b>{p.staffName}</b><div className="small muted">{p.period} · {p.method}</div></div>
@@ -746,7 +1204,152 @@ function Payroll({ openPayrollDetail }) {
   );
 }
 
-// ---------- Reports (P&L) ----------
+// Anything agreed away from the portal: a supply run, a job that ran over,
+// travel. Added by the office, never claimed by the Kleaner.
+function AddHours({ staffId, name, onDone, onCancel }) {
+  const [f, setF] = useState({ date: new Date().toISOString().slice(0, 10), hours: '', rate: '', note: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const submit = async () => {
+    setBusy(true); setErr('');
+    try {
+      await api.post(`/api/admin/payroll/${staffId}/hours`, {
+        date: f.date, hours: +f.hours, note: f.note,
+        rate: f.rate === '' ? undefined : +f.rate
+      });
+      onDone();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 24, borderColor: 'var(--beige-deep)' }}>
+      <b>Add extra hours for {name}</b>
+      <p className="small muted" style={{ margin: '4px 0 10px' }}>
+        For anything agreed outside the portal. Leave the rate blank to use their usual one.
+      </p>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '0 12px' }}>
+        <div className="field"><label>Date</label>
+          <input type="date" value={f.date} onChange={e => setF({ ...f, date: e.target.value })} /></div>
+        <div className="field"><label>Hours</label>
+          <input type="number" step="0.25" min="0.25" max="24" value={f.hours}
+            onChange={e => setF({ ...f, hours: e.target.value })} /></div>
+        <div className="field"><label>Rate, per hour</label>
+          <input type="number" step="0.25" min="0" placeholder="their usual" value={f.rate}
+            onChange={e => setF({ ...f, rate: e.target.value })} /></div>
+      </div>
+      <div className="field"><label>What it was for</label>
+        <input value={f.note} placeholder="e.g. supply run, job ran over"
+          onChange={e => setF({ ...f, note: e.target.value })} /></div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button className="btn gold small" disabled={busy || !f.hours} onClick={submit}>{busy ? 'Adding…' : 'Add hours'}</button>
+        <button className="btn ghost small" onClick={onCancel}>Cancel</button>
+      </div>
+      {err && <p className="small" style={{ color: 'var(--bad)', marginTop: 8 }}>{err}</p>}
+    </div>
+  );
+}
+
+// Overheads are just expenses, so they can be added and removed here rather
+// than only on the Costs page.
+function Overheads({ current, onChanged }) {
+  const [rows, setRows] = useState(null);
+  const [adding, setAdding] = useState(false);
+  const [f, setF] = useState({ date: new Date().toISOString().slice(0, 10), category: 'insurance', description: '', amount: '' });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const month = new Date().toISOString().slice(0, 7);
+  const load = () => api.get('/api/admin/expenses').then(r => setRows(r.expenses || r));
+  useEffect(() => { load(); }, []);
+
+  const add = async () => {
+    setBusy(true); setErr('');
+    try {
+      await api.post('/api/admin/expenses', { ...f, amount: +f.amount });
+      setF({ ...f, description: '', amount: '' });
+      setAdding(false);
+      await load(); onChanged?.();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  const remove = async r => {
+    if (!window.confirm(`Remove "${r.description}" for ${gbp(r.amount)}?`)) return;
+    try { await api.del('/api/admin/expenses/' + r.id); await load(); onChanged?.(); }
+    catch (e) { alert(e.message); }
+  };
+
+  const thisMonth = (rows || []).filter(r => (r.date || '').startsWith(month) && r.category !== 'supplies');
+
+  return (
+    <>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <h2 style={{ fontSize: 16, margin: 0 }}>This month's overheads ({gbp(current.overheads)})</h2>
+        <button className="btn ghost small" onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Add overhead'}</button>
+      </div>
+
+      {adding && (
+        <div className="card" style={{ marginBottom: 10, maxWidth: 560 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '0 12px' }}>
+            <div className="field"><label>Date</label>
+              <input type="date" value={f.date} onChange={e => setF({ ...f, date: e.target.value })} /></div>
+            <div className="field"><label>Category</label>
+              <select value={f.category} onChange={e => setF({ ...f, category: e.target.value })}>
+                {['insurance', 'fuel', 'equipment', 'marketing', 'software', 'accountancy', 'phone', 'other'].map(c =>
+                  <option key={c} value={c}>{c}</option>)}
+              </select>
+            </div>
+            <div className="field"><label>Amount (£)</label>
+              <input type="number" step="0.01" min="0" value={f.amount} onChange={e => setF({ ...f, amount: e.target.value })} /></div>
+          </div>
+          <div className="field"><label>What it was</label>
+            <input value={f.description} onChange={e => setF({ ...f, description: e.target.value })} /></div>
+          <button className="btn gold small" disabled={busy || !f.amount || !f.description} onClick={add}>
+            {busy ? 'Adding…' : 'Add overhead'}
+          </button>
+          {err && <p className="small" style={{ color: 'var(--bad)', marginTop: 8 }}>{err}</p>}
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 0, maxWidth: 560 }}>
+        <table className="tbl">
+          <tbody>
+            {Object.entries(current.byCategory || {}).map(([cat, amt]) => (
+              <tr key={cat} style={{ cursor: 'default' }}>
+                <td style={{ textTransform: 'capitalize' }}><b>{cat}</b></td>
+                <td style={{ textAlign: 'right' }}>{gbp(amt)}</td>
+              </tr>
+            ))}
+            {Object.keys(current.byCategory || {}).length === 0 &&
+              <tr style={{ cursor: 'default' }}><td className="muted">Nothing recorded yet this month</td><td /></tr>}
+          </tbody>
+        </table>
+      </div>
+
+      {thisMonth.length > 0 && (
+        <div className="card" style={{ padding: 0, maxWidth: 560, marginTop: 10 }}>
+          <table className="tbl">
+            <thead><tr><th>This month, line by line</th><th /><th /></tr></thead>
+            <tbody>
+              {thisMonth.map(r => (
+                <tr key={r.id} style={{ cursor: 'default' }}>
+                  <td>{r.description}<div className="small muted">{niceDate(r.date)} · {r.category}</div></td>
+                  <td style={{ textAlign: 'right' }}>{gbp(r.amount)}</td>
+                  <td style={{ textAlign: 'right' }}>
+                    <button className="btn ghost small" onClick={() => remove(r)}>Remove</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
 function Reports() {
   const [data, setData] = useState(null);
   useEffect(() => { api.get('/api/admin/pnl').then(setData); }, []);
@@ -791,18 +1394,11 @@ function Reports() {
         </table>
       </div>
 
-      <h2 style={{ fontSize: 16, marginBottom: 8 }}>This month's overheads by category ({gbp(cur.overheads)})</h2>
-      <div className="card" style={{ padding: 0, maxWidth: 520 }}>
-        <table className="tbl">
-          <tbody>
-            {Object.entries(cur.byCategory || {}).map(([cat, amt]) => (
-              <tr key={cat} style={{ cursor: 'default' }}><td style={{ textTransform: 'capitalize' }}>{cat}</td><td style={{ textAlign: 'right' }}>{gbp(amt)}</td></tr>
-            ))}
-            {Object.keys(cur.byCategory || {}).length === 0 && <tr style={{ cursor: 'default' }}><td className="muted">No overheads recorded yet this month</td><td /></tr>}
-          </tbody>
-        </table>
-      </div>
-      <p className="small muted" style={{ marginTop: 10 }}>Wages come from completed cleans × hourly rates. Supplies and overheads come from the expense ledger on the Costs &amp; stock page, so the P&amp;L always reflects what was actually spent.</p>
+      <Overheads current={cur} onChanged={() => api.get('/api/admin/pnl').then(setData)} />
+      <p className="small muted" style={{ marginTop: 10 }}>
+        Wages come from the hours allocated to each completed job at that job's rate, plus anything added by hand on the Payroll page.
+        Revenue counts card payments that went through and invoices marked paid.
+      </p>
     </>
   );
 }
@@ -1321,7 +1917,7 @@ function F({ label, value, onChange, type = 'text', placeholder = '' }) {
 }
 
 const EMPTY_STAFF = {
-  name: '', email: '', phone: '', address: '', dob: '', postcode: '', rate: '12.50', bio: '', photo: '',
+  name: '', email: '', phone: '', address: '', dob: '', postcode: '', hasCar: false, bio: '', photo: '',
   niNumber: '', bank: '',
   emergencyContact: { name: '', phone: '' },
   legal: {
@@ -1344,7 +1940,7 @@ function StaffDrawer({ id, onClose }) {
       const s = r.staff.find(x => x.id === id);
       setForm({
         ...EMPTY_STAFF, ...s,
-        rate: String(s.rate ?? ''),
+        hasCar: !!s.hasCar,
         emergencyContact: { ...EMPTY_STAFF.emergencyContact, ...(s.emergencyContact || {}) },
         legal: {
           rightToWork: { ...EMPTY_STAFF.legal.rightToWork, ...(s.legal?.rightToWork || {}) },
@@ -1365,7 +1961,7 @@ function StaffDrawer({ id, onClose }) {
     if (!form.name) { setError('Name is required.'); return; }
     setBusy(true);
     try {
-      const payload = { ...form, rate: +form.rate || 12.5, weekendRate: form.weekendRate ? +form.weekendRate : null };
+      const payload = { ...form, hasCar: !!form.hasCar };
       if (isNew) await api.post('/api/admin/staff', payload);
       else await api.patch('/api/admin/staff/' + id, payload);
       onClose();
@@ -1397,9 +1993,14 @@ function StaffDrawer({ id, onClose }) {
         <h3 style={{ fontSize: 15, margin: '10px 0 6px' }}>Work</h3>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 12px' }}>
           <F label="Patch postcode" value={form.postcode} onChange={v => set({ postcode: v.toUpperCase() })} />
-          <F label="Hourly rate (£)" value={form.rate} onChange={v => set({ rate: v })} />
-          <F label="Weekend rate (£, optional)" value={form.weekendRate || ''} onChange={v => set({ weekendRate: v })} placeholder="Applies Sat and Sun" />
         </div>
+        <label className="small" style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '4px 0 10px' }}>
+          <input type="checkbox" checked={!!form.hasCar} onChange={e => set({ hasCar: e.target.checked })} />
+          Has the use of a car
+        </label>
+        <p className="small muted" style={{ marginTop: -4 }}>
+          Pay is set on each job, not here, because it varies by the type of clean.
+        </p>
         <F label="Profile line (shown to clients when booking)" value={form.bio} onChange={v => set({ bio: v })} />
         <F label="Photo URL" value={form.photo} onChange={v => set({ photo: v })} placeholder="Link to their profile photo" />
 
@@ -1633,7 +2234,7 @@ function PayrollDrawer({ id, onClose }) {
             <Avatar src={d.staff.photo} name={d.staff.name} size={46} />
             <div>
               <h2 style={{ fontSize: 20 }}>{d.staff.name}</h2>
-              <div className="small muted">{gbp(d.staff.rate)}/hr{d.staff.weekendRate ? ` · ${gbp(d.staff.weekendRate)}/hr weekends` : ''}</div>
+              <div className="small muted">{d.jobsDone} job{d.jobsDone === 1 ? '' : 's'} · {d.hours}h</div>
             </div>
           </div>
           <button className="btn ghost small" onClick={() => onClose()}>Close</button>
@@ -2318,21 +2919,129 @@ function JobInvoice({ booking }) {
   );
 }
 
+// Builds a printable set of invoices in a new window and opens the print
+// dialogue, which is where the PDF comes from. Grouped by property, one per
+// page, so a bulk run can be split up and sent on.
+function openInvoicePack(pack) {
+  const esc = t => String(t ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  const money = n => '£' + (Math.round(n * 100) / 100).toFixed(2);
+  const day = d => d ? new Date(d + 'T12:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+
+  const page = inv => `
+    <section class="inv">
+      <header>
+        <div class="brand">Klea<span>✦</span></div>
+        <div class="meta">
+          <div class="num">${esc(inv.number || 'Invoice')}</div>
+          <div>Issued ${day(inv.issuedDate)}</div>
+          <div>Due ${day(inv.dueDate)}</div>
+          ${inv.status === 'paid' ? '<div class="paid">PAID</div>' : ''}
+        </div>
+      </header>
+      <div class="cols">
+        <div>
+          <h4>To</h4>
+          <p><b>${esc(inv.client?.name || 'Client')}</b><br>
+          ${esc(inv.client?.address || '')}<br>${esc(inv.client?.postcode || '')}</p>
+        </div>
+        <div>
+          <h4>From</h4>
+          <p><b>${esc(pack.business.name)}</b><br>${esc(pack.business.email)}<br>${esc(pack.business.web)}</p>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Description</th><th class="r">Amount</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>${esc(inv.job ? `${inv.job.service} on ${day(inv.job.date)} at ${inv.job.start}` : (inv.notes || 'Cleaning services'))}
+              ${inv.job ? `<div class="sub">${inv.job.hours} hours</div>` : ''}</td>
+            <td class="r">${money(inv.amount)}</td>
+          </tr>
+        </tbody>
+        <tfoot><tr><th>Total due</th><th class="r">${money(inv.amount)}</th></tr></tfoot>
+      </table>
+      ${inv.notes && inv.job ? `<p class="note">${esc(inv.notes)}</p>` : ''}
+      <footer>Thank you. Please quote ${esc(inv.number || '')} when paying.</footer>
+    </section>`;
+
+  const byProperty = {};
+  for (const inv of pack.invoices) (byProperty[inv.property] = byProperty[inv.property] || []).push(inv);
+
+  const body = Object.entries(byProperty).map(([property, list]) => `
+    <div class="group">
+      <h2 class="groupHead">${esc(property)} · ${list.length} invoice${list.length === 1 ? '' : 's'} · ${money(list.reduce((t, i) => t + i.amount, 0))}</h2>
+      ${list.map(page).join('')}
+    </div>`).join('');
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Klea invoices</title>
+  <style>
+    *{box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#2E2721;margin:0;background:#fff}
+    .groupHead{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:#8B7F70;padding:14px 26px 0;margin:0}
+    .inv{padding:26px;page-break-after:always;max-width:820px}
+    header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #2E2721;padding-bottom:14px}
+    .brand{font-size:26px;font-weight:700;letter-spacing:-.02em}
+    .brand span{color:#B4884B;font-size:15px;vertical-align:super}
+    .meta{text-align:right;font-size:13px;color:#5C5145;line-height:1.6}
+    .num{font-weight:700;color:#2E2721;font-size:15px}
+    .paid{display:inline-block;margin-top:4px;border:1.5px solid #41704A;color:#41704A;font-weight:700;padding:1px 9px;border-radius:999px;font-size:12px}
+    .cols{display:flex;gap:40px;margin:22px 0}
+    .cols h4{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#8B7F70;margin:0 0 5px}
+    .cols p{margin:0;font-size:14px;line-height:1.6}
+    table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}
+    th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#8B7F70;border-bottom:1px solid #E7DCCB;padding:0 0 7px}
+    td{padding:12px 0;border-bottom:1px solid #F0E7D9;vertical-align:top}
+    tfoot th{border-top:2px solid #2E2721;border-bottom:0;color:#2E2721;font-size:15px;padding-top:11px}
+    .r{text-align:right}
+    .sub{color:#8B7F70;font-size:12.5px;margin-top:3px}
+    .note{font-size:13px;color:#5C5145;margin-top:14px}
+    footer{margin-top:26px;font-size:12.5px;color:#8B7F70;border-top:1px solid #E7DCCB;padding-top:12px}
+    @media print{.groupHead{padding-top:0}.inv:last-child{page-break-after:auto}}
+  </style></head><body>${body}</body></html>`;
+
+  const w = window.open('', '_blank');
+  if (!w) { alert('Your browser blocked the print window. Allow pop-ups for this site and try again.'); return; }
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 400);
+}
+
 function Invoices({ openClient }) {
   const [data, setData] = useState(null);
-  const [filter, setFilter] = useState('chasing');
+  const [filter, setFilter] = useState('all');
+  const [who, setWho] = useState('');
+  const [from, setFrom] = useState('');
+  const [to, setTo] = useState('');
   const [adding, setAdding] = useState(false);
   const [clients, setClients] = useState([]);
   const [pickClient, setPickClient] = useState('');
-  const load = () => api.get('/api/admin/invoices').then(setData);
-  useEffect(() => { load(); api.get('/api/admin/clients').then(setClients); }, []);
+
+  const load = () => {
+    const q = new URLSearchParams();
+    if (who) q.set('clientId', who);
+    if (from) q.set('from', from);
+    if (to) q.set('to', to);
+    if (filter !== 'all') q.set('status', filter);
+    return api.get('/api/admin/invoices' + (q.toString() ? '?' + q : '')).then(setData);
+  };
+  useEffect(() => { load(); }, [who, from, to, filter]);
+  useEffect(() => { api.get('/api/admin/clients').then(setClients); }, []);
   if (!data) return <p className="muted">Loading…</p>;
 
-  const shown = data.invoices.filter(i =>
-    filter === 'chasing' ? i.needsChasing
-      : filter === 'unpaid' ? i.status === 'unpaid'
-        : filter === 'paid' ? i.status === 'paid'
-          : true);
+  const shown = data.invoices;
+
+  const printThem = async () => {
+    const q = new URLSearchParams();
+    if (who) q.set('clientId', who);
+    if (from) q.set('from', from);
+    if (to) q.set('to', to);
+    try {
+      const pack = await api.get('/api/admin/invoices/print' + (q.toString() ? '?' + q : ''));
+      if (!pack.invoices.length) { alert('Nothing to print with those filters.'); return; }
+      openInvoicePack(pack);
+    } catch (e) { alert(e.message); }
+  };
 
   return (
     <>
@@ -2340,7 +3049,38 @@ function Invoices({ openClient }) {
         <h1>Invoices</h1>
         <button className="btn gold small" onClick={() => setAdding(a => !a)}>{adding ? 'Cancel' : '+ Add invoice'}</button>
       </div>
-      <p className="muted">For clients who came direct. Upload the invoice, mark it paid when the money lands, and anything overdue flags itself.</p>
+      <p className="muted">An invoice is raised automatically the moment a booking is added. Mark it paid when the money lands, and anything overdue flags itself.</p>
+
+      <div className="card" style={{ margin: '14px 0' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '0 12px' }}>
+          <div className="field" style={{ marginBottom: 8 }}><label>Client</label>
+            <select value={who} onChange={e => setWho(e.target.value)}>
+              <option value="">All clients</option>
+              {(data.clients || []).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div className="field" style={{ marginBottom: 8 }}><label>Issued from</label>
+            <input type="date" value={from} onChange={e => setFrom(e.target.value)} /></div>
+          <div className="field" style={{ marginBottom: 8 }}><label>Issued to</label>
+            <input type="date" value={to} onChange={e => setTo(e.target.value)} /></div>
+          <div className="field" style={{ marginBottom: 8 }}><label>Showing</label>
+            <select value={filter} onChange={e => setFilter(e.target.value)}>
+              <option value="all">Everything</option>
+              <option value="unpaid">Unpaid</option>
+              <option value="chasing">Needs chasing</option>
+              <option value="paid">Paid</option>
+            </select>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <button className="btn small" onClick={printThem}>Print or save as PDF</button>
+          {(who || from || to || filter !== 'all') &&
+            <button className="btn ghost small" onClick={() => { setWho(''); setFrom(''); setTo(''); setFilter('all'); }}>Clear filters</button>}
+          <span className="small muted">
+            {shown.length} invoice{shown.length === 1 ? '' : 's'} · {gbp(data.total || 0)}
+          </span>
+        </div>
+      </div>
 
       <div className="stat-row" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
         <div className="stat"><div className="big">{gbp(data.outstanding)}</div><div className="lbl">Outstanding</div></div>
@@ -2360,11 +3100,7 @@ function Invoices({ openClient }) {
         </div>
       )}
 
-      <div style={{ display: 'flex', gap: 8, margin: '10px 0 14px', flexWrap: 'wrap' }}>
-        {[['chasing', 'Needs chasing'], ['unpaid', 'Unpaid'], ['paid', 'Paid'], ['all', 'All']].map(([k, label]) => (
-          <button key={k} className={'btn small ' + (filter === k ? 'gold' : 'ghost')} onClick={() => setFilter(k)}>{label}</button>
-        ))}
-      </div>
+
 
       {shown.length === 0 && (
         <p className="muted">{filter === 'chasing' ? 'Nothing overdue. All invoices are within their terms.' : 'Nothing here.'}</p>

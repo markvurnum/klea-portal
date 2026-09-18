@@ -241,9 +241,64 @@ export function normaliseWebhookReservation(payload) {
 // explicit `status` field a cancelled stay looks identical to a live one.
 const RESERVATION_FIELDS = '_id status listingId checkIn checkOut confirmationCode guestsCount';
 
+const LISTING_FIELDS = 'title nickname address publicDescription cleaning bedrooms defaultCheckInTime defaultCheckOutTime';
+
 export async function fetchListings() {
-  const data = await guestyGet('/listings', { limit: 100 });
+  const data = await guestyGet('/listings', { limit: 100, fields: LISTING_FIELDS });
   return (data.results || data.data || []).map(normaliseListing);
+}
+
+// The access notes, door code and cleaning instructions a Kleaner actually
+// needs. Guesty keeps these in three different places:
+//   * the reservation's own notes (cleaning, key code, special requests)
+//   * the listing's public description (the "access" paragraph)
+//   * per-property custom fields, which is where most accounts put wifi and
+//     entry details. Long ones are truncated in `value`, so read `fullText`.
+export async function fetchReservationNotes(reservationIds) {
+  const ids = [...new Set(reservationIds.filter(Boolean))];
+  if (!ids.length) return {};
+  const out = {};
+  // Batched, because one call for many ids keeps us well clear of the limits
+  for (let i = 0; i < ids.length; i += 25) {
+    const batch = ids.slice(i, i + 25);
+    const data = await guestyGet('/reservations-v3', { reservationIds: batch.join(',') });
+    for (const r of (data.results || data.data || (Array.isArray(data) ? data : []))) {
+      const id = r._id || r.reservationId || r.id;
+      const n = r.notes || {};
+      out[id] = {
+        cleaning: n.cleaning || '',
+        keyCode: n.keyCode || '',
+        specialRequests: n.specialRequests || '',
+        guest: n.guest || '',
+        other: n.other || ''
+      };
+    }
+  }
+  return out;
+}
+
+export async function fetchPropertyNotes(listingId) {
+  try {
+    const data = await guestyGet(`/properties-api/custom-fields/${encodeURIComponent(listingId)}`);
+    const fields = data.customFields || data.results || [];
+    return fields
+      .filter(f => (f.fullText || f.value))
+      .map(f => ({ label: f.displayName || f.key || 'Note', text: String(f.fullText || f.value) }));
+  } catch {
+    // Not every account uses custom fields, and a missing one is not an error
+    return [];
+  }
+}
+
+// Turns everything we know into the note a Kleaner reads on their phone
+export function buildAccessNote({ listing, reservationNotes, propertyNotes }) {
+  const parts = [];
+  if (reservationNotes?.keyCode) parts.push(`Key code: ${reservationNotes.keyCode}`);
+  if (listing?.access) parts.push(listing.access);
+  for (const p of (propertyNotes || [])) parts.push(`${p.label}: ${p.text}`);
+  if (reservationNotes?.cleaning) parts.push(reservationNotes.cleaning);
+  if (reservationNotes?.specialRequests) parts.push(`Guest asked for: ${reservationNotes.specialRequests}`);
+  return parts.filter(Boolean).join('\n').trim();
 }
 
 export async function fetchReservations({ from, to }) {
@@ -268,12 +323,14 @@ export async function fetchReservations({ from, to }) {
 // defensively and keep the raw record for troubleshooting on first connect.
 export function normaliseListing(l) {
   const addr = l.address || {};
+  const pub = l.publicDescription || {};
   return {
     guestyId: l._id || l.id,
     name: l.nickname || l.title || addr.street || 'Guesty listing',
     address: addr.full || [addr.street, addr.city].filter(Boolean).join(', ') || '',
     postcode: (addr.zipcode || addr.postcode || '').toUpperCase(),
-    bedrooms: l.bedrooms ?? l.propertyDetails?.bedrooms ?? 1
+    bedrooms: l.bedrooms ?? l.propertyDetails?.bedrooms ?? 1,
+    access: [pub.access, l.cleaning?.instructions].filter(Boolean).join('\n').trim()
   };
 }
 
@@ -420,6 +477,11 @@ export function importReservations({ listings, reservations }) {
         existing.date = r.checkOut;
         result.created.push(existing);
       } else { result.skipped++; }
+      // Access notes can be filled in after the booking was made
+      if (r.accessNote && !(existing.notes || '').includes(r.accessNote)) {
+        existing.notes = [changeoverNote(existing.guestyConfirmationCode || '', !!existing.sameDayTurnaround), r.accessNote]
+          .filter(Boolean).join('\n');
+      }
       continue;
     }
 
@@ -460,7 +522,7 @@ export function importReservations({ listings, reservations }) {
       source: 'guesty', guestyReservationId: r.guestyId,
       guestyConfirmationCode: r.confirmationCode || '',
       sameDayTurnaround: sameDay,
-      notes: changeoverNote(r.confirmationCode, sameDay),
+      notes: [changeoverNote(r.confirmationCode, sameDay), r.accessNote].filter(Boolean).join('\n'),
       checklist, createdAt: new Date().toISOString()
     };
     db.bookings.push(booking);
