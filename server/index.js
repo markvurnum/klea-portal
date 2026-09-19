@@ -120,9 +120,9 @@ function complianceFor(s) {
 
 function companyLegalStatus() {
   const db = getDb();
-  // Older seeded entries have no id, so give them one on the way past
-  let next = (db.settings.companyLegal || []).reduce((m, d) => Math.max(m, d.id || 0), 0);
-  for (const d of (db.settings.companyLegal || [])) if (!d.id) d.id = ++next;
+  // Older entries may have no id at all, so give them one on the way past
+  let next = (db.settings.companyLegal || []).length;
+  for (const d of (db.settings.companyLegal || [])) if (!d.id) d.id = String(++next);
   return (db.settings.companyLegal || []).map(doc => ({
     ...doc,
     ...checkDate(doc.name, doc.expires, { renewal: true })
@@ -1742,7 +1742,9 @@ app.post('/api/admin/staff', requireRole('admin', 'office'), (req, res) => {
   const s = {
     id: nextId('staff'), name, phone, postcode: postcode.toUpperCase(), colour: colours[db.staff.length % colours.length],
     days, start, end, active: true,
-    photo: req.body.photo || '', bio: req.body.bio || '', rate: +req.body.rate || 12.50,
+    photo: req.body.photo || '', bio: req.body.bio || '', hasCar: !!req.body.hasCar,
+    // Kept only as a fallback: pay is set on each job now
+    rate: +req.body.rate || 12.50,
     email: req.body.email || '', address: req.body.address || '', dob: req.body.dob || '',
     niNumber: req.body.niNumber || '',
     emergencyContact: req.body.emergencyContact || { name: '', phone: '' },
@@ -1989,7 +1991,12 @@ app.post('/api/admin/company-documents', requireRole('admin', 'office'), (req, r
     return res.status(400).json({ error: 'That file is too big. Please use a smaller scan.' });
   }
   db.settings.companyLegal = db.settings.companyLegal || [];
-  const id = db.settings.companyLegal.reduce((m, d) => Math.max(m, d.id || 0), 0) + 1;
+  // The documents seeded with the system have word ids like "el", so a new one
+  // takes the next free number without tripping over them
+  const used = db.settings.companyLegal.map(d => String(d.id));
+  let n = db.settings.companyLegal.length + 1;
+  while (used.includes(String(n))) n++;
+  const id = String(n);
   db.settings.companyLegal.push({
     id, name: name.trim(), expires: expires || '',
     dataUrl: dataUrl || null, uploadedAt: dataUrl ? new Date().toISOString() : null
@@ -2000,14 +2007,14 @@ app.post('/api/admin/company-documents', requireRole('admin', 'office'), (req, r
 });
 
 app.get('/api/admin/company-documents/:id', requireRole('admin', 'office'), (req, res) => {
-  const d = (getDb().settings.companyLegal || []).find(x => x.id === +req.params.id);
+  const d = (getDb().settings.companyLegal || []).find(x => String(x.id) === String(req.params.id));
   if (!d || !d.dataUrl) return res.status(404).json({ error: 'No file on this one.' });
   res.json({ id: d.id, name: d.name, dataUrl: d.dataUrl });
 });
 
 app.patch('/api/admin/company-documents/:id', requireRole('admin', 'office'), (req, res) => {
   const db = getDb();
-  const d = (db.settings.companyLegal || []).find(x => x.id === +req.params.id);
+  const d = (db.settings.companyLegal || []).find(x => String(x.id) === String(req.params.id));
   if (!d) return res.status(404).json({ error: 'Not found' });
   const { name, expires, dataUrl } = req.body;
   if (name !== undefined) d.name = name.trim();
@@ -2026,8 +2033,8 @@ app.patch('/api/admin/company-documents/:id', requireRole('admin', 'office'), (r
 app.delete('/api/admin/company-documents/:id', requireRole('admin'), (req, res) => {
   const db = getDb();
   const before = (db.settings.companyLegal || []).length;
-  const doc = (db.settings.companyLegal || []).find(x => x.id === +req.params.id);
-  db.settings.companyLegal = (db.settings.companyLegal || []).filter(x => x.id !== +req.params.id);
+  const doc = (db.settings.companyLegal || []).find(x => String(x.id) === String(req.params.id));
+  db.settings.companyLegal = (db.settings.companyLegal || []).filter(x => String(x.id) !== String(req.params.id));
   if (db.settings.companyLegal.length === before) return res.status(404).json({ error: 'Not found' });
   logAction('removed a company document', doc?.name || '', req);
   save();
