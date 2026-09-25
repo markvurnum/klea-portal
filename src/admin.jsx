@@ -1052,7 +1052,8 @@ function CompanyDocuments({ onChanged }) {
 
 function Staff({ openStaff }) {
   const [data, setData] = useState(null);
-  useEffect(() => { api.get('/api/admin/staff').then(setData); }, []);
+  const load = () => api.get('/api/admin/staff').then(setData);
+  useEffect(() => { load(); }, []);
   if (!data) return <p className="muted">Loading…</p>;
 
   return (

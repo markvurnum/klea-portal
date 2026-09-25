@@ -1,5 +1,11 @@
 # Klea — HANDOFF
 
+## 2026-09-25 — Fixed: Staff page crashed to a blank screen
+
+The client reported the Staff page not loading. Cause: when the company documents section was rebuilt on 19 Sept it was handed `onChanged={load}`, but the Staff page never had a `load` function (it fetched inline), so React threw `ReferenceError: load is not defined` on render and unmounted the whole page. Reproduced locally, fixed by giving Staff a proper `load`, proved the page renders with all three sections and the documents request returning 200, deployed.
+
+Lesson: a bare white screen is a render crash, and the console names the component. There is no error boundary in the admin app, so any such crash blanks the entire page rather than one section. Worth adding one.
+
 ## 2026-09-10 — Demo data cleared, system is go-live ready
 
 **Ran the go-live clear on the live system**, leaving one labelled example on each screen. Backed up twice first: a copy of the data pulled down locally, and a second copy left on the server at `/data/db-before-golive.json`. Railway's daily backups also cover it.
